@@ -1,5 +1,11 @@
 {
   "geode": "5.11.2",
+  "gd": {
+    "win": "*",
+    "android": "*",
+    "mac": "*",
+    "ios": "*"
+  },
   "id": "yourname.predictive_input_buffer",
   "name": "Predictive Input Buffer",
   "version": "v1.0.0",
@@ -12,8 +18,12 @@
     },
     "wave-lookahead": {
       "type": "int", "default": 90, "min": 10, "max": 240,
-      "name": "Wave lookahead (ticks)",
-      "description": "Wave dies to spikes/saws on slopes, so it needs a longer look."
+      "name": "Wave lookahead (ticks)"
+    },
+    "fix-late-clicks": {
+      "type": "bool", "default": false,
+      "name": "Also fix late clicks",
+      "description": "Off: late clicks are left alone. On: they are corrected by rewinding."
     }
   }
 }
