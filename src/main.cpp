@@ -25,18 +25,31 @@ static bool g_simulating = false;
 static bool g_simDied = false;
 static bool g_passthrough = false;
 static PlayerObject* g_dummy = nullptr;
-static GameObject*   g_killer = nullptr;   // what killed the dummy
-static int g_lastTicks = 0;                // ticks the dummy ran in the last trial
+static GameObject*   g_killer = nullptr;
+static int g_lastTicks = 0;
 
 struct Pending { int ticks; bool down; int button; bool isP1; };
 static std::deque<Pending> g_pending;
 static int g_activeDelay = 0;
 
 static bool dbg() { return Mod::get()->getSettingValue<bool>("debug"); }
+static bool isZero(CCPoint p) { return p.x == 0.f && p.y == 0.f; }
+
+// Find the real position of the icon: try the node position first, then the physics field
+static CCPoint realPos(PlayerObject* p) {
+    CCPoint a = p->getPosition();
+    if (!isZero(a)) return a;
+    return p->m_position;
+}
+static CCPoint realLastPos(PlayerObject* p) {
+    CCPoint a = p->m_lastPosition;
+    if (!isZero(a)) return a;
+    return realPos(p);
+}
 
 $on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v2.2 LOADED (dummy trajectory + diagnostics)");
+    log::info("[InputBuffer] v2.3 LOADED (dummy trajectory + position fix)");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
@@ -53,7 +66,6 @@ class $modify(PBKeys, CCKeyboardDispatcher) {
 };
 
 class $modify(PBPlayLayer, PlayLayer) {
-    // Death of the DUMMY is only recorded. Real deaths work normally.
     void destroyPlayer(PlayerObject* p, GameObject* g) {
         if (p == g_dummy || g_simulating) {
             g_simDied = true;
@@ -87,15 +99,23 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         return g_dummy;
     }
 
-    // Move ONLY the dummy through the level, with the click delayed by `delay` ticks.
-    bool trial(PlayerObject* real, int delay, bool holdMode, int look) {
-        auto d = getDummy();
-
-        // copy the real player's state into the dummy
+    void copyState(PlayerObject* d, PlayerObject* real) {
         d->copyAttributes(real);
-        d->setPosition(real->getPosition());
-        d->m_position     = real->m_position;
-        d->m_lastPosition = real->m_lastPosition;   // collision needs where we were last tick
+
+        // gamemode flags, set explicitly
+        d->m_isShip   = real->m_isShip;
+        d->m_isBird   = real->m_isBird;
+        d->m_isBall   = real->m_isBall;
+        d->m_isDart   = real->m_isDart;
+        d->m_isRobot  = real->m_isRobot;
+        d->m_isSpider = real->m_isSpider;
+        d->m_isSwing  = real->m_isSwing;
+
+        CCPoint pos  = realPos(real);
+        CCPoint last = realLastPos(real);
+        d->setPosition(pos);
+        d->m_position     = pos;
+        d->m_lastPosition = last;
         d->m_vehicleSize  = real->m_vehicleSize;
         d->m_yVelocity    = real->m_yVelocity;
         d->m_isOnGround   = real->m_isOnGround;
@@ -103,6 +123,11 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         d->m_playerSpeed  = real->m_playerSpeed;
         d->setRotation(real->getRotation());
         d->m_isDead = false;
+    }
+
+    bool trial(PlayerObject* real, int delay, bool holdMode, int look) {
+        auto d = getDummy();
+        copyState(d, real);
 
         CCPoint start = d->getPosition();
         g_simulating = true; g_simDied = false; g_killer = nullptr;
@@ -137,26 +162,31 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         auto player = isP1 ? pl->m_player1 : pl->m_player2;
         if (!player) return GJBaseGameLayer::handleButton(down, button, isP1);
 
+        if (dbg()) {
+            auto gp = player->getPosition();
+            log::info("[InputBuffer] REAL icon: getPosition=({:.1f},{:.1f}) m_position=({:.1f},{:.1f}) m_lastPosition=({:.1f},{:.1f}) yVel={:.2f} speed={:.2f}",
+                gp.x, gp.y, player->m_position.x, player->m_position.y,
+                player->m_lastPosition.x, player->m_lastPosition.y,
+                player->m_yVelocity, player->m_playerSpeed);
+        }
+
         bool wave = player->m_isDart;
         bool holdMode = player->m_isShip || player->m_isDart;
         int win  = wave ? STAGES[g_stage].wave : STAGES[g_stage].all;
         int look = Mod::get()->getSettingValue<int64_t>(wave ? "wave-lookahead" : "lookahead");
 
-        // 1) the player's own click first: safe -> send it unchanged
         if (trial(player, 0, holdMode, look)) {
             if (dbg()) log::info("[InputBuffer] click safe, unchanged{}", wave ? " (wave)" : "");
             g_activeDelay = 0;
             return GJBaseGameLayer::handleButton(down, button, isP1);
         }
 
-        // dummy died almost instantly: the simulation is not trustworthy, don't touch the click
         if (g_lastTicks <= 2) {
             log::info("[InputBuffer] SIM BROKEN: dummy died after {} ticks, input unchanged", g_lastTicks);
             g_activeDelay = 0;
             return GJBaseGameLayer::handleButton(down, button, isP1);
         }
 
-        // 2) it would die: find the smallest delay that survives
         for (int dly = 1; dly <= win; dly++) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
             if (ms > BUDGET_MS) {
@@ -174,20 +204,17 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
             }
         }
 
-        // 3) nothing in the window works: send the original click
         log::info("[InputBuffer] No safe delay found (limit {}), input unchanged", win);
         g_activeDelay = 0;
         GJBaseGameLayer::handleButton(down, button, isP1);
     }
 
-    // All player input arrives here first
     void handleButton(bool down, int button, bool isP1) {
         auto pl = PlayLayer::get();
         if (g_passthrough || g_simulating || !pl || g_stage == 4 || !pl->m_isPracticeMode)
             return GJBaseGameLayer::handleButton(down, button, isP1);
 
         if (!down) {
-            // release keeps the same delay as its click, so the hold length is unchanged
             if (g_activeDelay > 0 || !g_pending.empty()) {
                 g_pending.push_back({g_activeDelay, false, button, isP1});
                 return;
@@ -198,7 +225,6 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         judgeClick(pl, down, button, isP1);
     }
 
-    // every tick: send delayed inputs that are due
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         if (g_simulating || isHalfTick || g_pending.empty()) return;
