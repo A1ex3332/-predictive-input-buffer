@@ -28,6 +28,13 @@ static PlayerObject* g_dummy = nullptr;
 static GameObject*   g_killer = nullptr;
 static int g_lastTicks = 0;
 
+// last prediction for the player's own click (to compare with the real death)
+static bool    g_havePred = false;
+static bool    g_predDead = false;
+static int     g_predTicks = 0;
+static CCPoint g_predEnd = {0, 0};
+static int     g_predKiller = -1;
+
 struct Pending { int ticks; bool down; int button; bool isP1; };
 static std::deque<Pending> g_pending;
 static int g_activeDelay = 0;
@@ -48,7 +55,7 @@ static CCPoint realLastPos(PlayerObject* p) {
 
 $on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v2.6 LOADED (dummy trajectory + step size fix)");
+    log::info("[InputBuffer] v2.7 LOADED (dummy trajectory + recheck + real-death compare)");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
@@ -71,6 +78,18 @@ class $modify(PBPlayLayer, PlayLayer) {
             g_killer = g;
             return;
         }
+
+        // a REAL death: print it next to the last prediction
+        if (dbg() && p) {
+            auto rp = realPos(p);
+            log::info("[InputBuffer] REAL death at ({:.1f},{:.1f}), object id {}",
+                rp.x, rp.y, g ? g->m_objectID : -1);
+            if (g_havePred) {
+                log::info("[InputBuffer]   last prediction for the click: {} after {} ticks at ({:.1f},{:.1f}), object id {}",
+                    g_predDead ? "DEAD" : "alive", g_predTicks, g_predEnd.x, g_predEnd.y, g_predKiller);
+            }
+        }
+
         PlayLayer::destroyPlayer(p, g);
     }
 
@@ -127,6 +146,7 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
 
     bool trial(PlayerObject* real, int delay, bool holdMode, int look) {
         auto d = getDummy();
+        d->releaseButton(PlayerButton::Jump);   // make sure no button is left held
         copyState(d, real);
 
         CCPoint start = d->getPosition();
@@ -162,11 +182,14 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         g_simulating = false;
         g_lastTicks = t;
 
-        if (dbg() && delay == 0) {
+        if (delay == 0) {
             auto e = d->getPosition();
-            log::info("[InputBuffer]   dummy: ran {} ticks, ({:.1f},{:.1f}) -> ({:.1f},{:.1f}), {}, killer object id {}",
-                t, start.x, start.y, e.x, e.y, dead ? "DEAD" : "alive",
-                g_killer ? g_killer->m_objectID : -1);
+            g_havePred = true; g_predDead = dead; g_predTicks = t; g_predEnd = e;
+            g_predKiller = g_killer ? g_killer->m_objectID : -1;
+            if (dbg()) {
+                log::info("[InputBuffer]   dummy: ran {} ticks, ({:.1f},{:.1f}) -> ({:.1f},{:.1f}), {}, killer object id {}",
+                    t, start.x, start.y, e.x, e.y, dead ? "DEAD" : "alive", g_predKiller);
+            }
         }
         return !dead;
     }
@@ -218,6 +241,13 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         }
 
         log::info("[InputBuffer] No safe delay found (limit {}), input unchanged", win);
+
+        // recheck: the original click must give exactly the same result as the first time
+        if (dbg()) {
+            log::info("[InputBuffer]   RECHECK of the original click (should match the first 'dummy:' line):");
+            trial(player, 0, holdMode, look);
+        }
+
         g_activeDelay = 0;
         GJBaseGameLayer::handleButton(down, button, isP1);
     }
