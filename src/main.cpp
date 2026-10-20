@@ -36,7 +36,7 @@ static bool dbg() { return Mod::get()->getSettingValue<bool>("debug"); }
 
 $on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v2.1 LOADED (dummy trajectory + diagnostics)");
+    log::info("[InputBuffer] v2.2 LOADED (dummy trajectory + diagnostics)");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
@@ -53,6 +53,7 @@ class $modify(PBKeys, CCKeyboardDispatcher) {
 };
 
 class $modify(PBPlayLayer, PlayLayer) {
+    // Death of the DUMMY is only recorded. Real deaths work normally.
     void destroyPlayer(PlayerObject* p, GameObject* g) {
         if (p == g_dummy || g_simulating) {
             g_simDied = true;
@@ -86,6 +87,7 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         return g_dummy;
     }
 
+    // Move ONLY the dummy through the level, with the click delayed by `delay` ticks.
     bool trial(PlayerObject* real, int delay, bool holdMode, int look) {
         auto d = getDummy();
 
@@ -95,7 +97,6 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         d->m_position     = real->m_position;
         d->m_lastPosition = real->m_lastPosition;   // collision needs where we were last tick
         d->m_vehicleSize  = real->m_vehicleSize;
-        d->m_playerSize   = real->m_playerSize;
         d->m_yVelocity    = real->m_yVelocity;
         d->m_isOnGround   = real->m_isOnGround;
         d->m_isUpsideDown = real->m_isUpsideDown;
@@ -141,6 +142,7 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         int win  = wave ? STAGES[g_stage].wave : STAGES[g_stage].all;
         int look = Mod::get()->getSettingValue<int64_t>(wave ? "wave-lookahead" : "lookahead");
 
+        // 1) the player's own click first: safe -> send it unchanged
         if (trial(player, 0, holdMode, look)) {
             if (dbg()) log::info("[InputBuffer] click safe, unchanged{}", wave ? " (wave)" : "");
             g_activeDelay = 0;
@@ -154,6 +156,7 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
             return GJBaseGameLayer::handleButton(down, button, isP1);
         }
 
+        // 2) it would die: find the smallest delay that survives
         for (int dly = 1; dly <= win; dly++) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
             if (ms > BUDGET_MS) {
@@ -171,17 +174,20 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
             }
         }
 
+        // 3) nothing in the window works: send the original click
         log::info("[InputBuffer] No safe delay found (limit {}), input unchanged", win);
         g_activeDelay = 0;
         GJBaseGameLayer::handleButton(down, button, isP1);
     }
 
+    // All player input arrives here first
     void handleButton(bool down, int button, bool isP1) {
         auto pl = PlayLayer::get();
         if (g_passthrough || g_simulating || !pl || g_stage == 4 || !pl->m_isPracticeMode)
             return GJBaseGameLayer::handleButton(down, button, isP1);
 
         if (!down) {
+            // release keeps the same delay as its click, so the hold length is unchanged
             if (g_activeDelay > 0 || !g_pending.empty()) {
                 g_pending.push_back({g_activeDelay, false, button, isP1});
                 return;
@@ -192,6 +198,7 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         judgeClick(pl, down, button, isP1);
     }
 
+    // every tick: send delayed inputs that are due
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         if (g_simulating || isHalfTick || g_pending.empty()) return;
