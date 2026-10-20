@@ -5,17 +5,20 @@ on:
     branches: [main]
 jobs:
   build:
+    name: Windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build the mod
         uses: geode-sdk/build-geode-mod@main
         with:
+          bindings: geode-sdk/bindings
+          bindings-ref: main
           combine: true
-          target: Windows
   package:
-    needs: [build]
+    name: Package builds
     runs-on: ubuntu-latest
+    needs: ['build']
     steps:
       - uses: geode-sdk/build-geode-mod/combine@main
         id: build
