@@ -7,18 +7,18 @@ using namespace geode::prelude;
 
 struct Stage { const char* name; int allLimit; int waveLimit; };
 static const Stage STAGES[] = {
-    {"STAGE 1: 4 Ticks All",                 4,  -1},
-    {"STAGE 2: 8 Ticks All",                 8,  -1},
+    {"STAGE 1: 2 Ticks All",                 2,  -1},
+    {"STAGE 2: 4 Ticks All",                 4,  -1},
     {"STAGE 3: 8 Ticks All | 8 Ticks Wave",  8,   8},
     {"STAGE 4: 16 Ticks All | 8 Ticks Wave", 16,  8},
     {"STAGE 5: OFF (100% Raw Input)",        0,   0},
 };
 
-static int  g_stage = 1;
+static int  g_stage = 0;          // starts at STAGE 1 (2 ticks)
 static bool g_waveMode = false;
 static int  g_tick = 0;
 
-struct Pending { int tick0; int button; bool player1; };
+struct Pending { int tick0; int button; bool player1; bool released; };
 static std::vector<Pending> g_pending;
 static bool g_refiring = false;
 
@@ -29,27 +29,27 @@ static int curLimit() {
 
 class $modify(BufferLayer, GJBaseGameLayer) {
 
-    int tick() {
-        return g_tick;
-    }
+    int tick() { return g_tick; }
+
     void handleButton(bool down, int button, bool isPlayer1) {
         if (g_refiring || !Mod::get()->getSettingValue<bool>("enabled") || curLimit() == 0) {
             GJBaseGameLayer::handleButton(down, button, isPlayer1);
             return;
         }
         if (down) {
-            g_pending.push_back({tick(), button, isPlayer1});
+            g_pending.push_back({tick(), button, isPlayer1, false});
         } else {
-            std::erase_if(g_pending, [&](auto& p) {
-                return p.button == button && p.player1 == isPlayer1;
-            });
+            // remember the release instead of deleting the press
+            for (auto& p : g_pending) {
+                if (p.button == button && p.player1 == isPlayer1) p.released = true;
+            }
         }
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
-                g_tick++;
+        g_tick++;
 
         int now = tick();
         int limit = curLimit();
@@ -63,6 +63,7 @@ class $modify(BufferLayer, GJBaseGameLayer) {
                 g_refiring = true;
                 GJBaseGameLayer::handleButton(false, it->button, it->player1);
                 GJBaseGameLayer::handleButton(true,  it->button, it->player1);
+                if (it->released) GJBaseGameLayer::handleButton(false, it->button, it->player1);
                 g_refiring = false;
 
                 log::info("[InputBuffer] *** SAVED +{} TICKS ({:.2f} frames @ 60fps) PRESS! "
