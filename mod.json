@@ -11,19 +11,17 @@
   "version": "v1.0.0",
   "developer": "yourname",
   "description": "Practice-mode predictive input buffer. F6 cycles stages.",
-  "settings": {
-    "lookahead": {
-      "type": "int", "default": 60, "min": 10, "max": 240,
-      "name": "Lookahead (ticks)"
-    },
-    "wave-lookahead": {
-      "type": "int", "default": 90, "min": 10, "max": 240,
-      "name": "Wave lookahead (ticks)"
-    },
-    "fix-late-clicks": {
-      "type": "bool", "default": false,
-      "name": "Also fix late clicks",
-      "description": "Off: late clicks are left alone. On: they are corrected by rewinding."
-    }
+"settings": {
+  "lookahead": {
+    "type": "int", "default": 40, "min": 10, "max": 240,
+    "name": "Lookahead (ticks)"
+  },
+  "wave-lookahead": {
+    "type": "int", "default": 30, "min": 10, "max": 240,
+    "name": "Wave lookahead (ticks)"
+  },
+  "debug": {
+    "type": "bool", "default": true,
+    "name": "Debug log"
   }
 }
