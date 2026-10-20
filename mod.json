@@ -1,12 +1,18 @@
 {
-"geode": "5.11.2",
-  "gd": { "win": "2.2074" },
-  "id": "yourname.predictive-input-buffer",
+  "geode": "5.11.2",
+  "gd": {
+    "win": "*"
+  },
+  "id": "raresdalas1009.predictive-input-buffer",
   "name": "Predictive Input Buffer",
-"gd": { "win": "*" },
-  "developer": "yourname",
+  "version": "v0.1.0",
+  "developer": "raresdalas1009",
   "description": "Staged input buffer with tick-saving log. F6 cycles stages, F7 toggles wave mode.",
   "settings": {
-    "enabled": { "type": "bool", "name": "Enabled", "default": true }
+    "enabled": {
+      "type": "bool",
+      "name": "Enabled",
+      "default": true
+    }
   }
 }
