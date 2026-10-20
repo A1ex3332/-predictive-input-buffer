@@ -53,9 +53,14 @@ static CCPoint realLastPos(PlayerObject* p) {
     return realPos(p);
 }
 
+// an idle second player sits close to the level origin
+static bool nearOrigin(PlayerObject* p) {
+    return realPos(p).x < 50.f;
+}
+
 $on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v2.7 LOADED (dummy trajectory + recheck + real-death compare)");
+    log::info("[InputBuffer] v2.8 LOADED (dummy trajectory + idle player fix)");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
@@ -199,10 +204,12 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         PlayerObject* p1 = pl->m_player1;
         PlayerObject* p2 = pl->m_player2;
 
+        // pick the player the flag points to; if it is the idle one near the origin,
+        // and the other one is clearly in the level, use the other one
         PlayerObject* player = isP1 ? p1 : p2;
-        if (!player || isZero(realPos(player))) {
-            PlayerObject* alt = isP1 ? p2 : p1;
-            if (alt && !isZero(realPos(alt))) player = alt;
+        PlayerObject* alt    = isP1 ? p2 : p1;
+        if (!player || (nearOrigin(player) && alt && !nearOrigin(alt))) {
+            if (alt) player = alt;
         }
         if (!player) return GJBaseGameLayer::handleButton(down, button, isP1);
 
