@@ -1,0 +1,12 @@
+{
+  "geode": "4.0.0",
+  "gd": { "win": "2.2074" },
+  "id": "yourname.predictive-input-buffer",
+  "name": "Predictive Input Buffer",
+  "version": "v0.1.0",
+  "developer": "yourname",
+  "description": "Staged input buffer with tick-saving log. F6 cycles stages, F7 toggles wave mode.",
+  "settings": {
+    "enabled": { "type": "bool", "name": "Enabled", "default": true }
+  }
+}
