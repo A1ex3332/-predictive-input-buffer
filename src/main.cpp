@@ -47,8 +47,8 @@ class $modify(BufferLayer, GJBaseGameLayer) {
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 
-    void processCommands(float dt) {
-        GJBaseGameLayer::processCommands(dt);
+    void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
                 g_tick++;
 
         int now = tick();
@@ -77,7 +77,7 @@ class $modify(BufferLayer, GJBaseGameLayer) {
 };
 
 class $modify(KeyHook, CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat) {
+    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
         if (down && !repeat) {
             if (key == KEY_F6) {
                 g_stage = (g_stage + 1) % 5;
@@ -88,6 +88,6 @@ class $modify(KeyHook, CCKeyboardDispatcher) {
                 log::info("[InputBuffer] Wave mode {} [Limit: {}]", g_waveMode ? "ON" : "OFF", curLimit());
             }
         }
-        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat);
+        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
     }
 };
