@@ -35,7 +35,6 @@ static int g_activeDelay = 0;
 static bool dbg() { return Mod::get()->getSettingValue<bool>("debug"); }
 static bool isZero(CCPoint p) { return p.x == 0.f && p.y == 0.f; }
 
-// Find the real position of the icon: try the node position first, then the physics field
 static CCPoint realPos(PlayerObject* p) {
     CCPoint a = p->getPosition();
     if (!isZero(a)) return a;
@@ -49,7 +48,7 @@ static CCPoint realLastPos(PlayerObject* p) {
 
 $on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v2.3 LOADED (dummy trajectory + position fix)");
+    log::info("[InputBuffer] v2.4 LOADED (dummy trajectory + player pick fix)");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
@@ -102,7 +101,6 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
     void copyState(PlayerObject* d, PlayerObject* real) {
         d->copyAttributes(real);
 
-        // gamemode flags, set explicitly
         d->m_isShip   = real->m_isShip;
         d->m_isBird   = real->m_isBird;
         d->m_isBall   = real->m_isBall;
@@ -159,16 +157,26 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
 
     void judgeClick(PlayLayer* pl, bool down, int button, bool isP1) {
         auto t0 = Clock::now();
-        auto player = isP1 ? pl->m_player1 : pl->m_player2;
-        if (!player) return GJBaseGameLayer::handleButton(down, button, isP1);
+        PlayerObject* p1 = pl->m_player1;
+        PlayerObject* p2 = pl->m_player2;
 
         if (dbg()) {
-            auto gp = player->getPosition();
-            log::info("[InputBuffer] REAL icon: getPosition=({:.1f},{:.1f}) m_position=({:.1f},{:.1f}) m_lastPosition=({:.1f},{:.1f}) yVel={:.2f} speed={:.2f}",
-                gp.x, gp.y, player->m_position.x, player->m_position.y,
-                player->m_lastPosition.x, player->m_lastPosition.y,
-                player->m_yVelocity, player->m_playerSpeed);
+            auto a = p1 ? realPos(p1) : CCPoint{-1, -1};
+            auto b = p2 ? realPos(p2) : CCPoint{-1, -1};
+            log::info("[InputBuffer] isP1={} | P1 at ({:.1f},{:.1f}) | P2 at ({:.1f},{:.1f})",
+                isP1, a.x, a.y, b.x, b.y);
         }
+
+        // pick the player the flag points to; if it sits at (0,0), use the other one
+        PlayerObject* player = isP1 ? p1 : p2;
+        if (!player || isZero(realPos(player))) {
+            PlayerObject* alt = isP1 ? p2 : p1;
+            if (alt && !isZero(realPos(alt))) {
+                if (dbg()) log::info("[InputBuffer] flag pointed to an idle player, using the other one");
+                player = alt;
+            }
+        }
+        if (!player) return GJBaseGameLayer::handleButton(down, button, isP1);
 
         bool wave = player->m_isDart;
         bool holdMode = player->m_isShip || player->m_isDart;
