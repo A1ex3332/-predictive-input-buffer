@@ -1,93 +1,63 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
-#include <vector>
 
 using namespace geode::prelude;
 
-struct Stage { const char* name; int allLimit; int waveLimit; };
+// Late-press forgiveness: a jump pressed up to N ticks AFTER you left the ground
+// still counts, as if you had pressed on time.
+struct Stage { const char* name; int limit; };
 static const Stage STAGES[] = {
-    {"STAGE 1: 2 Ticks All",                 2,  -1},
-    {"STAGE 2: 4 Ticks All",                 4,  -1},
-    {"STAGE 3: 8 Ticks All | 8 Ticks Wave",  8,   8},
-    {"STAGE 4: 16 Ticks All | 8 Ticks Wave", 16,  8},
-    {"STAGE 5: OFF (100% Raw Input)",        0,   0},
+    {"STAGE 1: 2 Ticks", 2},
+    {"STAGE 2: 4 Ticks", 4},
+    {"STAGE 3: 8 Ticks", 8},
+    {"STAGE 4: 16 Ticks", 16},
+    {"STAGE 5: OFF (100% Raw Input)", 0},
 };
 
-static int  g_stage = 0;          // starts at STAGE 1 (2 ticks)
-static bool g_waveMode = false;
-static int  g_tick = 0;
+static int g_stage = 0;
+static int g_tick = 0;
+static int g_lastGround[2] = {-100000, -100000};
+static int g_force[2] = {0, 0};
 
-struct Pending { int tick0; int button; bool player1; bool released; };
-static std::vector<Pending> g_pending;
-static bool g_refiring = false;
-
-static int curLimit() {
-    auto& s = STAGES[g_stage];
-    return (g_waveMode && s.waveLimit >= 0) ? s.waveLimit : s.allLimit;
-}
+static int curLimit() { return STAGES[g_stage].limit; }
 
 class $modify(BufferLayer, GJBaseGameLayer) {
 
-    int tick() { return g_tick; }
-
     void handleButton(bool down, int button, bool isPlayer1) {
-        if (g_refiring || !Mod::get()->getSettingValue<bool>("enabled") || curLimit() == 0) {
-            GJBaseGameLayer::handleButton(down, button, isPlayer1);
-            return;
-        }
-        if (down) {
-            g_pending.push_back({tick(), button, isPlayer1, false});
-        } else {
-            // remember the release instead of deleting the press
-            for (auto& p : g_pending) {
-                if (p.button == button && p.player1 == isPlayer1) p.released = true;
+        if (down && button == 1 && curLimit() > 0 &&
+            Mod::get()->getSettingValue<bool>("enabled")) {
+            int idx = isPlayer1 ? 0 : 1;
+            auto* p = isPlayer1 ? m_player1 : m_player2;
+            int late = g_tick - g_lastGround[idx];
+            if (p && !p->m_isOnGround && late > 0 && late <= curLimit()) {
+                g_force[idx] = 1;
+                log::info("[InputBuffer] *** SAVED +{} TICKS ({:.2f} frames @ 60fps) PRESS! "
+                          "(Frame0: {} -> Delayed: {}) [Limit: {}] ***",
+                          late, late * 0.25f, g_lastGround[idx], g_tick, curLimit());
             }
         }
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        // make the game treat the player as grounded for this step so the jump registers
+        if (g_force[0] > 0 && m_player1) { m_player1->m_isOnGround = true; g_force[0]--; }
+        if (g_force[1] > 0 && m_player2) { m_player2->m_isOnGround = true; g_force[1]--; }
+
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         g_tick++;
 
-        int now = tick();
-        int limit = curLimit();
-
-        for (auto it = g_pending.begin(); it != g_pending.end();) {
-            int age = now - it->tick0;
-            if (age > limit) { it = g_pending.erase(it); continue; }
-
-            auto* player = it->player1 ? m_player1 : m_player2;
-            if (age > 0 && player && player->m_isOnGround) {
-                g_refiring = true;
-                GJBaseGameLayer::handleButton(false, it->button, it->player1);
-                GJBaseGameLayer::handleButton(true,  it->button, it->player1);
-                if (it->released) GJBaseGameLayer::handleButton(false, it->button, it->player1);
-                g_refiring = false;
-
-                log::info("[InputBuffer] *** SAVED +{} TICKS ({:.2f} frames @ 60fps) PRESS! "
-                          "(Frame0: {} -> Delayed: {}) [Limit: {}] ***",
-                          age, age * 0.25f, it->tick0, now, limit);
-                it = g_pending.erase(it);
-                continue;
-            }
-            ++it;
-        }
+        if (m_player1 && m_player1->m_isOnGround) g_lastGround[0] = g_tick;
+        if (m_player2 && m_player2->m_isOnGround) g_lastGround[1] = g_tick;
     }
 };
 
 class $modify(KeyHook, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
-        if (down && !repeat) {
-            if (key == KEY_F6) {
-                g_stage = (g_stage + 1) % 5;
-                g_pending.clear();
-                log::info("[InputBuffer] F6 Cycle -> {}", STAGES[g_stage].name);
-            } else if (key == KEY_F7) {
-                g_waveMode = !g_waveMode;
-                log::info("[InputBuffer] Wave mode {} [Limit: {}]", g_waveMode ? "ON" : "OFF", curLimit());
-            }
+        if (down && !repeat && key == KEY_F6) {
+            g_stage = (g_stage + 1) % 5;
+            log::info("[InputBuffer] F6 Cycle -> {}", STAGES[g_stage].name);
         }
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
     }
