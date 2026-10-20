@@ -18,7 +18,7 @@ static constexpr Stage STAGES[] = {
     {0, 0, "OFF"},
 };
 static constexpr int STAGE_COUNT = 5;
-static constexpr int BUDGET_MS = 25;
+static constexpr int BUDGET_MS = 40;
 
 static int  g_stage = 0;
 static bool g_simulating = false;
@@ -48,7 +48,7 @@ static CCPoint realLastPos(PlayerObject* p) {
 
 $on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v2.5 LOADED (dummy trajectory + movement fix)");
+    log::info("[InputBuffer] v2.6 LOADED (dummy trajectory + step size fix)");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
@@ -87,7 +87,9 @@ class $modify(PBPlayLayer, PlayLayer) {
 };
 
 class $modify(PBGameLayer, GJBaseGameLayer) {
+    // one physics tick is 1/240 s; the player's update() wants that multiplied by 60
     static constexpr float TICK = 1.f / 240.f;
+    static constexpr float DT   = TICK * 60.f;   // = 0.25
 
     PlayerObject* getDummy() {
         if (!g_dummy) {
@@ -136,24 +138,22 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
             if (t == delay) d->pushButton(PlayerButton::Jump);
             if (!holdMode && t == delay + 1) d->releaseButton(PlayerButton::Jump);
 
-            // remember where we were, step, then sync both position fields by hand
             CCPoint before = d->getPosition();
             d->m_lastPosition = before;
-            d->update(TICK);
+            d->update(DT);
             CCPoint after = d->getPosition();
 
             bool nodeUnchanged = (after.x == before.x && after.y == before.y);
             bool fieldMoved = (d->m_position.x != before.x || d->m_position.y != before.y);
-            if (nodeUnchanged && fieldMoved) d->setPosition(d->m_position);  // physics moved the field only
-            else d->m_position = after;                                      // node moved: copy to field
+            if (nodeUnchanged && fieldMoved) d->setPosition(d->m_position);
+            else d->m_position = after;
 
-            this->checkCollisions(d, TICK, false);
-            d->updateRotation(TICK);
+            this->checkCollisions(d, DT, false);
+            d->updateRotation(DT);
 
             if (dbg() && delay == 0 && t < 4) {
                 auto p = d->getPosition();
-                log::info("[InputBuffer]     tick {}: ({:.2f},{:.2f}) field=({:.2f},{:.2f})",
-                    t, p.x, p.y, d->m_position.x, d->m_position.y);
+                log::info("[InputBuffer]     tick {}: ({:.2f},{:.2f})", t, p.x, p.y);
             }
         }
         d->releaseButton(PlayerButton::Jump);
@@ -176,7 +176,6 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         PlayerObject* p1 = pl->m_player1;
         PlayerObject* p2 = pl->m_player2;
 
-        // pick the player the flag points to; if it sits at (0,0), use the other one
         PlayerObject* player = isP1 ? p1 : p2;
         if (!player || isZero(realPos(player))) {
             PlayerObject* alt = isP1 ? p2 : p1;
