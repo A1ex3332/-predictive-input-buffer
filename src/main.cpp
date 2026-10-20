@@ -48,7 +48,7 @@ static CCPoint realLastPos(PlayerObject* p) {
 
 $on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v2.4 LOADED (dummy trajectory + player pick fix)");
+    log::info("[InputBuffer] v2.5 LOADED (dummy trajectory + movement fix)");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
@@ -136,9 +136,25 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
             if (t == delay) d->pushButton(PlayerButton::Jump);
             if (!holdMode && t == delay + 1) d->releaseButton(PlayerButton::Jump);
 
+            // remember where we were, step, then sync both position fields by hand
+            CCPoint before = d->getPosition();
+            d->m_lastPosition = before;
             d->update(TICK);
+            CCPoint after = d->getPosition();
+
+            bool nodeUnchanged = (after.x == before.x && after.y == before.y);
+            bool fieldMoved = (d->m_position.x != before.x || d->m_position.y != before.y);
+            if (nodeUnchanged && fieldMoved) d->setPosition(d->m_position);  // physics moved the field only
+            else d->m_position = after;                                      // node moved: copy to field
+
             this->checkCollisions(d, TICK, false);
             d->updateRotation(TICK);
+
+            if (dbg() && delay == 0 && t < 4) {
+                auto p = d->getPosition();
+                log::info("[InputBuffer]     tick {}: ({:.2f},{:.2f}) field=({:.2f},{:.2f})",
+                    t, p.x, p.y, d->m_position.x, d->m_position.y);
+            }
         }
         d->releaseButton(PlayerButton::Jump);
 
@@ -160,21 +176,11 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         PlayerObject* p1 = pl->m_player1;
         PlayerObject* p2 = pl->m_player2;
 
-        if (dbg()) {
-            auto a = p1 ? realPos(p1) : CCPoint{-1, -1};
-            auto b = p2 ? realPos(p2) : CCPoint{-1, -1};
-            log::info("[InputBuffer] isP1={} | P1 at ({:.1f},{:.1f}) | P2 at ({:.1f},{:.1f})",
-                isP1, a.x, a.y, b.x, b.y);
-        }
-
         // pick the player the flag points to; if it sits at (0,0), use the other one
         PlayerObject* player = isP1 ? p1 : p2;
         if (!player || isZero(realPos(player))) {
             PlayerObject* alt = isP1 ? p2 : p1;
-            if (alt && !isZero(realPos(alt))) {
-                if (dbg()) log::info("[InputBuffer] flag pointed to an idle player, using the other one");
-                player = alt;
-            }
+            if (alt && !isZero(realPos(alt))) player = alt;
         }
         if (!player) return GJBaseGameLayer::handleButton(down, button, isP1);
 
