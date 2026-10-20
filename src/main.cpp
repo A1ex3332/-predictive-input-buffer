@@ -16,6 +16,7 @@ static const Stage STAGES[] = {
 
 static int  g_stage = 1;
 static bool g_waveMode = false;
+static int  g_tick = 0;
 
 struct Pending { int tick0; int button; bool player1; };
 static std::vector<Pending> g_pending;
@@ -29,10 +30,8 @@ static int curLimit() {
 class $modify(BufferLayer, GJBaseGameLayer) {
 
     int tick() {
-        // If this member name fails to compile, swap in the physics step counter from your bindings.
-        return m_gameState.m_currentProgress;
+        return g_tick;
     }
-
     void handleButton(bool down, int button, bool isPlayer1) {
         if (g_refiring || !Mod::get()->getSettingValue<bool>("enabled") || curLimit() == 0) {
             GJBaseGameLayer::handleButton(down, button, isPlayer1);
@@ -50,6 +49,7 @@ class $modify(BufferLayer, GJBaseGameLayer) {
 
     void processCommands(float dt) {
         GJBaseGameLayer::processCommands(dt);
+                g_tick++;
 
         int now = tick();
         int limit = curLimit();
