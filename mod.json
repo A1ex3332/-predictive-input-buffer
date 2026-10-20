@@ -14,17 +14,36 @@
   "settings": {
     "lookahead": {
       "type": "int",
-      "default": 40,
+      "default": 120,
       "min": 10,
-      "max": 240,
+      "max": 480,
       "name": "Lookahead (ticks)"
     },
     "wave-lookahead": {
       "type": "int",
-      "default": 30,
+      "default": 90,
       "min": 10,
-      "max": 240,
+      "max": 480,
       "name": "Wave lookahead (ticks)"
+    },
+    "safety-margin": {
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 2,
+      "name": "Safety margin (ticks)"
+    },
+    "delay-offset": {
+      "type": "int",
+      "default": 0,
+      "min": -2,
+      "max": 2,
+      "name": "Delay offset (ticks)"
+    },
+    "fix-releases": {
+      "type": "bool",
+      "default": true,
+      "name": "Also fix releases (ship / wave)"
     },
     "debug": {
       "type": "bool",
