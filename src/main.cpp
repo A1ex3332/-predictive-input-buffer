@@ -6,7 +6,6 @@
 
 using namespace geode::prelude;
 
-// ---------- stages ----------
 struct Stage { int all; int wave; const char* name; };
 static constexpr Stage STAGES[] = {
     {2, 2, "STAGE 1 (2 All / 2 Wave)"},
@@ -20,32 +19,30 @@ static int  g_stage = 0;
 static bool g_simulating = false;
 static bool g_simDied = false;
 
-static void logBanner() {
+$on_mod(Loaded) {
     log::info("[InputBuffer] ============================================");
-    log::info("[InputBuffer] v1.0 LOADED (Wave Spikes/Saws Trajectory Fix)");
+    log::info("[InputBuffer] v1.0 LOADED");
     log::info("[InputBuffer] Starting Mode: {}", STAGES[g_stage].name);
     log::info("[InputBuffer] Press F6 in-level to cycle: 2/2 -> 4/4 -> 8/8 -> 16/8 -> OFF");
     log::info("[InputBuffer] ============================================");
 }
 
-$on_mod(Loaded) { logBanner(); }
-
-// ---------- F6 cycles stages ----------
+// F6 cycles the stage
 class $modify(PBKeys, CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat) {
+    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat, double timestamp) {
         if (down && !repeat && key == KEY_F6 && PlayLayer::get()) {
             g_stage = (g_stage + 1) % STAGE_COUNT;
             log::info("[InputBuffer] Mode -> {}", STAGES[g_stage].name);
         }
-        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat);
+        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat, timestamp);
     }
 };
 
-// ---------- play layer: block real death while simulating ----------
+// Don't really die while simulating
 class $modify(PBPlayLayer, PlayLayer) {
     struct Fields {
         std::deque<Ref<CheckpointObject>> history;
-        int  pendingTicks = -1;
+        int  pendingTicks = 0;   // 0 = nothing waiting
         bool pendingDown = false, pendingP1 = true;
         int  pendingBtn = 0;
     };
@@ -56,27 +53,30 @@ class $modify(PBPlayLayer, PlayLayer) {
     }
 };
 
-// ---------- core: snapshot + shift search ----------
 class $modify(PBGameLayer, GJBaseGameLayer) {
-    static constexpr float TICK = 1.f / 240.f; // verify the real step
+    static constexpr float TICK = 1.f / 240.f;
 
-    void processCommands(float dt) {
-        GJBaseGameLayer::processCommands(dt);
+    void step() {
+        GJBaseGameLayer::processCommands(TICK, false, true);
+    }
+
+    void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         auto pl = PlayLayer::get();
-        if (!pl || g_simulating || !pl->m_isPracticeMode || g_stage == 4) return;
+        if (!pl || g_simulating || isHalfTick || !pl->m_isPracticeMode || g_stage == 4) return;
 
         auto f = static_cast<PBPlayLayer*>(pl)->m_fields.self();
         f->history.push_back(pl->createCheckpoint());
         while ((int)f->history.size() > 17) f->history.pop_front();
 
-        if (f->pendingTicks >= 0 && --f->pendingTicks < 0)
+        // fire a delayed click
+        if (f->pendingTicks > 0 && --f->pendingTicks == 0)
             GJBaseGameLayer::handleButton(f->pendingDown, f->pendingBtn, f->pendingP1);
     }
 
     bool survives(int ticks) {
         g_simulating = true; g_simDied = false;
-        for (int i = 0; i < ticks && !g_simDied; i++)
-            GJBaseGameLayer::processCommands(TICK);
+        for (int i = 0; i < ticks && !g_simDied; i++) step();
         g_simulating = false;
         return !g_simDied;
     }
@@ -86,11 +86,11 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
         if (!pl || g_simulating || !down || !pl->m_isPracticeMode || g_stage == 4)
             return GJBaseGameLayer::handleButton(down, button, isP1);
 
-        // wave uses its own window and a longer lookahead
         auto player = isP1 ? pl->m_player1 : pl->m_player2;
         bool wave = player && player->m_isDart;
         int win  = wave ? STAGES[g_stage].wave : STAGES[g_stage].all;
         int look = Mod::get()->getSettingValue<int64_t>(wave ? "wave-lookahead" : "lookahead");
+        bool fixLate = Mod::get()->getSettingValue<bool>("fix-late-clicks");
 
         auto f = static_cast<PBPlayLayer*>(pl)->m_fields.self();
         auto now = pl->createCheckpoint();
@@ -100,24 +100,27 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
                 if (k == 0 && sign == -1) continue;
                 int shift = k * sign;
 
-                if (shift >= 0) {                       // press LATER
-                    for (int i = 0; i < shift; i++) GJBaseGameLayer::processCommands(TICK);
+                if (shift >= 0) {
+                    // press LATER by `shift` ticks
+                    for (int i = 0; i < shift; i++) step();
                     GJBaseGameLayer::handleButton(down, button, isP1);
                     bool ok = survives(look);
                     pl->loadFromCheckpoint(now);
                     if (ok) {
-                        if (shift > 0) log::info("[InputBuffer] Shifted input +{} ticks{}", shift, wave ? " (wave)" : "");
+                        if (shift == 0) return GJBaseGameLayer::handleButton(down, button, isP1);
+                        log::info("[InputBuffer] Shifted input +{} ticks{}", shift, wave ? " (wave)" : "");
                         f->pendingTicks = shift; f->pendingDown = down;
                         f->pendingBtn = button;  f->pendingP1 = isP1;
-                        if (shift == 0) { f->pendingTicks = -1; return GJBaseGameLayer::handleButton(down, button, isP1); }
                         return;
                     }
-                } else {                                // press EARLIER (rewind)
+                } else {
+                    // press EARLIER (rewind) - skipped unless "fix late clicks" is on
+                    if (!fixLate) continue;
                     size_t idx = f->history.size() - 1 + shift;
                     if (idx >= f->history.size()) continue;
                     pl->loadFromCheckpoint(f->history[idx]);
                     GJBaseGameLayer::handleButton(down, button, isP1);
-                    for (int i = 0; i < -shift; i++) GJBaseGameLayer::processCommands(TICK);
+                    for (int i = 0; i < -shift; i++) step();
                     bool ok = survives(look);
                     pl->loadFromCheckpoint(now);
                     if (ok) {
@@ -128,7 +131,7 @@ class $modify(PBGameLayer, GJBaseGameLayer) {
                 }
             }
         }
-        // nothing in the window survives: pass the original input through
+        // nothing worked: let the click through unchanged
         GJBaseGameLayer::handleButton(down, button, isP1);
     }
 };
