@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.24.0",
+	"version": "v2.25.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -198,6 +198,20 @@
 			"name": "Performance log (debug)",
 			"description": "After each click, log in the console (F9) how long its predictions took, how many runs and ghost ticks it used, and the cost per ghost tick. Changes nothing about the decisions.",
 			"default": false
+		},
+		"ship-buffer": {
+			"type": "bool",
+			"name": "Ship: buffer inputs",
+			"description": "Buffer ship presses and releases too. A crash only counts if you couldn't have recovered (the opposite input 8 / 16 / 24 ticks before it is tried), the smallest delay that clears wins, and fast feathering goes straight through (spam guard). Off = ship is never touched, like before.",
+			"default": false
+		},
+		"ship-max-delay": {
+			"type": "int",
+			"name": "Ship: max delay (ticks)",
+			"description": "Ship's own max delay, used instead of the F6 stage. Ship has momentum, so small delays are enough and big ones feel laggy. 4 ticks = 1 frame at 60fps.",
+			"default": 2,
+			"min": 0,
+			"max": 16
 		}
 	}
 }

@@ -185,6 +185,8 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool shipBuffer = false;     // v2.25: buffer ship inputs too
+        int shipMaxDelay = 2;        // v2.25: ship's own max delay (240/s ticks)
         bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
         int simRuns = 0;             // v2.21: predictions run for the current click
         long simTicks = 0;           // v2.21: ghost ticks stepped for the current click
@@ -353,6 +355,8 @@ namespace {
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
+        buf.shipBuffer = mod->getSettingValue<bool>("ship-buffer");
+        buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
@@ -966,7 +970,7 @@ namespace {
     }
 
     bool isFlying(PlayerObject* player) {
-        return player->m_isDart || player->m_isBird || player->m_isSwing;
+        return player->m_isDart || player->m_isBird || player->m_isSwing || player->m_isShip;
     }
 
     // Orb auto-clicks last one ghost update, then let go (unless the test itself is holding).
@@ -1432,6 +1436,32 @@ namespace {
         return 0;
     }
 
+    // v2.25 ship scoring. Like the wave: a crash only counts if you couldn't have recovered.
+    // Ship has momentum, so recovery (the opposite input) is tried earlier before the crash:
+    // 8, 16 and 24 ticks.
+    constexpr int SHIP_RECOVER[] = { 8, 16, 24 };
+
+    int shipScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int target,
+        SimEnd* end) {
+        int ret = simulateOrbs(layer, p1, p2, dual, delay, down, horizon, -1, target, end);
+        if (ret >= target || *end == SimEnd::StopSearch) {
+            return ret;
+        }
+        for (int margin : SHIP_RECOVER) {
+            int turnAt = ret - st(margin);
+            if (turnAt < st(WAVE_MIN_TURN)) {
+                break;
+            }
+            int length = std::min(horizon, turnAt + st(WAVE_ESCAPE));
+            SimEnd turnEnd;
+            int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
+            if (turned >= length) {
+                return horizon;
+            }
+        }
+        return ret;
+    }
+
     bool marginUsed = false;  // the last wave save took the +1 tick safety margin
 
     int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay, int base,
@@ -1580,7 +1610,8 @@ namespace {
 
         auto* p1 = self->m_player1;
         auto* p2 = dual ? layer->m_player2 : nullptr;
-        if (!p1 || p1->m_isDead || p1->m_isShip || (p2 && p2->m_isShip)) {
+        bool anyShip = p1 && (p1->m_isShip || (p2 && p2->m_isShip));
+        if (!p1 || p1->m_isDead || (anyShip && !buf.shipBuffer)) {
             resetPending();
             buf.appliedInput = down;
             return false;
@@ -1606,7 +1637,7 @@ namespace {
             buf.rapid = 0;
         }
         buf.sinceInput = 0;
-        if (anyWave && buf.rapid >= SPAM_STREAK) {
+        if ((anyWave || anyShip) && buf.rapid >= SPAM_STREAK) {
             resetPending();
             buf.appliedInput = down;
             return false;
@@ -1644,7 +1675,7 @@ namespace {
             }
             // v2.16: letting go ends a dash, so dash releases are predicted like robot ones.
             bool dashing = p1->m_isDashing || (p2 && p2->m_isDashing);
-            if (!wave2 && !down && !robot && !dashing) {
+            if (!wave2 && !down && !robot && !dashing && !anyShip) {
                 if (buf.releaseShift > 0) {
                     // the press was delayed, so its release is delayed by the same amount:
                     // the hold length the ghost was tested with is the one the game gets
@@ -1663,7 +1694,7 @@ namespace {
         if (anyWave) {
             horizon = fullWaveHorizon(mini);
         }
-        int maxDelay = st(anyWave ? buf.ticksWave : buf.ticksAll);
+        int maxDelay = st(anyWave ? buf.ticksWave : (anyShip ? std::clamp(buf.shipMaxDelay, 0, 16) : buf.ticksAll));
         if (maxDelay <= 0) {
             buf.appliedInput = down;
             return false;
@@ -1674,13 +1705,13 @@ namespace {
         // ball, ufo, spider, swing) re-triggers while held, so model a tap.
         bool anyRobot = p1->m_isRobot || (p2 && p2->m_isRobot);
         int releaseAfter = -1;
-        if (down && !anyWave) {
+        if (down && !anyWave && !anyShip) {
             releaseAfter = anyRobot ? robotHold.pick(-1, 50) : holdEstimate();
         }
 
         // On the ground a press is a jump; only move it onto an orb if the setting says so.
         bool grounded = p1->m_isOnGround && (!p2 || p2->m_isOnGround);
-        if (down && !anyWave && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
+        if (down && !anyWave && !anyShip && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
             int orbLanded = 0;
             int k = memorySaysSkip(sliceOf(p1)) ? 0 : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, &orbLanded);
             if (k > 0) {
@@ -1699,9 +1730,11 @@ namespace {
         bool robotPress = down && anyRobot && !anyWave && buf.robotSmart;
         bool anySpider = p1->m_isSpider || (p2 && p2->m_isSpider);
         bool spiderPress = down && anySpider && !anyWave && !robotPress && buf.spiderSmart;
+        bool shipInput = anyShip && !anyWave;  // v2.25: press or release, both steer the ship
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                  : robotPress    ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
                  : spiderPress   ? spiderScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
+                 : shipInput     ? shipScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.trackMovers = false;
         if (base >= horizon) {
@@ -1732,6 +1765,7 @@ namespace {
             int ret = cubeStyleWave ? waveScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
                     : robotPress    ? robotScore(layer, p1, p2, dual, learned, horizon, target, &e)
                     : spiderPress   ? spiderScore(layer, p1, p2, dual, learned, horizon, releaseAfter, target, &e)
+                    : shipInput     ? shipScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
                                     : simulateOrbs(layer, p1, p2, dual, learned, down, horizon, releaseAfter, target, &e);
             if (ret >= target) {
                 saved = learned;
@@ -1746,6 +1780,9 @@ namespace {
                     })
                   : spiderPress   ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
+                    })
+                  : shipInput     ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                        return shipScore(layer, p1, p2, dual, k, down, horizon, target, e);
                     })
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
         }
@@ -1867,7 +1904,7 @@ namespace {
 
         bool twoPlayer = layer->m_level && layer->m_level->m_twoPlayerMode;
         bool dual = !twoPlayer && layer->m_gameState.m_isDualMode && layer->m_player2;
-        if (player->m_isShip || (dual && layer->m_player2->m_isShip)) {
+        if (!buf.shipBuffer && (player->m_isShip || (dual && layer->m_player2->m_isShip))) {
             resetPending();
             buf.autoReleased = false;
             if (buf.appliedInput != buf.realInput) {
@@ -1920,7 +1957,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.24 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.25 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
