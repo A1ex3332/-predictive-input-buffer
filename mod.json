@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.26.0",
+	"version": "v2.27.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -218,6 +218,20 @@
 			"name": "Orb timing",
 			"description": "For orbs that only work at a specific moment inside them: a press already inside an orb that would crash is moved 1-6 ticks later in the orb if that survives, the orb timing that worked at a spot before is tried first, and predictions also try clicking later orbs 3 and 6 ticks into them.",
 			"default": true
+		},
+		"cube-late-crash": {
+			"type": "int",
+			"name": "Cube: ignore crashes after (ticks)",
+			"description": "If pressing now only crashes after a normal cube / ball jump would have landed, the crash is the next obstacle's, not this click's: no delay can help, so the mod skips the search (saves time and stutter). 90 ticks = about 0.37 s. 0 = always search.",
+			"default": 90,
+			"min": 0,
+			"max": 240
+		},
+		"predict-moving-objects": {
+			"type": "bool",
+			"name": "Predict moving objects (experimental)",
+			"description": "Spikes and blocks near your path that are moving right now (move triggers) are moved along their current motion during predictions, so saves account for where they will be. Straight-line movement only. Turn 'Don't buffer near moving objects' off when using this.",
+			"default": false
 		}
 	}
 }

@@ -189,6 +189,8 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        int lateCrash = 90;          // v2.27: cube / ball crashes after this many ticks aren't this click's (0 = off)
+        bool predictMovers = false;  // v2.27: move objects along their current motion during predictions
         bool shipBuffer = false;     // v2.25: buffer ship inputs too
         int shipMaxDelay = 2;        // v2.25: ship's own max delay (240/s ticks)
         bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
@@ -246,6 +248,8 @@ namespace {
         double x;
         double y;
         int movedTick;
+        double vx = 0.0;  // v2.27: movement per physics step while it's moving
+        double vy = 0.0;
     };
     constexpr int MOVER_TICKS = 120;
     constexpr size_t WATCH_LIMIT = 4096;
@@ -361,6 +365,8 @@ namespace {
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
         buf.shipBuffer = mod->getSettingValue<bool>("ship-buffer");
+        buf.lateCrash = static_cast<int>(mod->getSettingValue<int64_t>("cube-late-crash"));
+        buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
         buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
@@ -719,10 +725,50 @@ namespace {
         }
         for (auto& [object, w] : watched) {
             if (object->m_positionX != w.x || object->m_positionY != w.y) {
+                // called every step, so the change is the movement per step
+                w.vx = object->m_positionX - w.x;
+                w.vy = object->m_positionY - w.y;
                 w.x = object->m_positionX;
                 w.y = object->m_positionY;
                 w.movedTick = tickCount;
             }
+            else if (tickCount - w.movedTick > 1) {
+                w.vx = w.vy = 0.0;  // stopped
+            }
+        }
+    }
+
+    // v2.27 moving-object prediction. Objects near your path that are moving right now are
+    // moved along their current motion during a prediction (where they'll be k steps
+    // later), and put back exactly afterwards. Straight-line movement only: easing,
+    // rotation and toggles still aren't predicted.
+    struct Mover {
+        GameObject* object;
+        double x, y, vx, vy;
+    };
+    std::vector<Mover> movers;
+
+    void collectMovers() {
+        movers.clear();
+        if (!buf.predictMovers) {
+            return;
+        }
+        for (auto const& [object, w] : watched) {
+            if ((w.vx != 0.0 || w.vy != 0.0) && tickCount - w.movedTick <= 1) {
+                movers.push_back({ object, object->m_positionX, object->m_positionY, w.vx, w.vy });
+            }
+        }
+    }
+
+    void placeMovers(int steps) {
+        for (auto const& m : movers) {
+            double x = m.x + m.vx * steps;
+            double y = m.y + m.vy * steps;
+            m.object->setPosition({ static_cast<float>(x), static_cast<float>(y) });
+            m.object->m_positionX = x;
+            m.object->m_positionY = y;
+            m.object->setObjectRectDirty(true);
+            m.object->m_isOrientedBoxDirty = true;
         }
     }
 
@@ -1051,7 +1097,11 @@ namespace {
         bool died = false;
         bool safe = false;
 
+        collectMovers();
         for (; tick < total; ++tick) {
+            if (!movers.empty()) {
+                placeMovers(tick + 1);  // where they'll be after this step
+            }
             buf.simTick = tick;
             // v2.26: orb auto-clicks that wait a few ticks into the orb fire here, if the
             // ghost is still inside an orb by then.
@@ -1161,6 +1211,10 @@ namespace {
             ++groundTicks;
         }
 
+        if (!movers.empty()) {
+            placeMovers(0);  // back exactly where they were
+            movers.clear();
+        }
         ++buf.simRuns;
         buf.simTicks += tick + 1;
 
@@ -1796,7 +1850,7 @@ namespace {
         }
 
         buf.sawMover = false;
-        buf.trackMovers = buf.avoidMovers;
+        buf.trackMovers = buf.avoidMovers || buf.predictMovers;
         SimEnd end;
         bool cubeStyleWave = anyWave && !buf.waveV46;
         bool robotPress = down && anyRobot && !anyWave && buf.robotSmart;
@@ -1810,6 +1864,16 @@ namespace {
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.trackMovers = false;
         if (base >= horizon) {
+            decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            buf.appliedInput = down;
+            return false;
+        }
+
+        // v2.27: a cube / ball press that only crashes after a normal jump would have landed
+        // (~90 ticks) dies to the next obstacle, not this click: no delay helps, so don't
+        // spend the whole time budget searching (it was most of the per-click lag).
+        bool groundPress = down && !anyFlyer && !anyRobot && !anySpider && !anyWave;
+        if (groundPress && buf.lateCrash > 0 && base >= st(buf.lateCrash)) {
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
@@ -1970,7 +2034,7 @@ namespace {
         if (buf.sinceInput <= 998) {
             ++buf.sinceInput;
         }
-        if (buf.avoidMovers && !watched.empty()) {
+        if ((buf.avoidMovers || buf.predictMovers) && !watched.empty()) {
             updateWatched();
         }
 
@@ -2029,7 +2093,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.26 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.27 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
