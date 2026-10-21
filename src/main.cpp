@@ -597,6 +597,11 @@ namespace {
         }
     }
 
+    // A hold that spans a death / restart / new level isn't a real tap length.
+    void forgetPress() {
+        pressTick = -1;
+    }
+
     int holdEstimate() {
         return tapHold.pick(12, 50);  // ~50 ms, a typical tap
     }
@@ -1088,11 +1093,13 @@ namespace {
             return false;
         }
 
-        bool dual = layer->m_gameState.m_isDualMode && layer->m_player2;
         auto* level = layer->m_level;
-        if (level && !isPlayer1 && level->m_twoPlayerMode) {
+        bool twoPlayer = level && level->m_twoPlayerMode;
+        if (twoPlayer && !isPlayer1) {
             return false;
         }
+        // In two-player levels P2 is someone else: never simulate P1's input on it.
+        bool dual = !twoPlayer && layer->m_gameState.m_isDualMode && layer->m_player2;
 
         buf.isPlayer1 = isPlayer1;
         buf.realInput = down;
@@ -1275,6 +1282,12 @@ namespace {
     void cycleStage() {
         buf.stage = (buf.stage + 1) % STAGE_COUNT;
         resetPending();
+        // A delayed input that was waiting is dropped; the game gets what you're really
+        // holding now (otherwise, with the buffer switched off, it never would).
+        auto* layer = GameManager::get()->m_playLayer;
+        if (layer && !buf.autoReleased && buf.appliedInput != buf.realInput) {
+            sendButton(layer, buf.realInput);
+        }
         applyStage();
         readSettings();
         say("F6 -> {}", stageText());
@@ -1336,7 +1349,8 @@ namespace {
             updateWatched();
         }
 
-        bool dual = layer->m_gameState.m_isDualMode && layer->m_player2;
+        bool twoPlayer = layer->m_level && layer->m_level->m_twoPlayerMode;
+        bool dual = !twoPlayer && layer->m_gameState.m_isDualMode && layer->m_player2;
         if (player->m_isShip || (dual && layer->m_player2->m_isShip)) {
             resetPending();
             buf.autoReleased = false;
@@ -1387,7 +1401,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.10 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.10.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1405,6 +1419,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.appliedInput = false;
         buf.autoReleased = false;
         buf.rapid = 0;
+        forgetPress();
         finishDrift(" (died)");
         PlayLayer::destroyPlayer(player, object);
     }
@@ -1501,6 +1516,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.isPlayer1 = true;
         buf.sinceInput = 999;
         buf.rapid = 0;
+        forgetPress();
         return true;
     }
 
@@ -1511,6 +1527,7 @@ class $modify(BufPlayLayer, PlayLayer) {
 
     void resetLevel() {
         resetPending();
+        forgetPress();
         buf.autoReleased = false;
         drift.active = false;
         PlayLayer::resetLevel();
