@@ -131,6 +131,7 @@ namespace {
         PlayerObject* ghost1 = nullptr;
         PlayerObject* ghost2 = nullptr;
         CCLayer* ghostLayer = nullptr;
+        unsigned ghostLayerBase = 0;  // v2.24: children the ghost layer has right after the ghosts are made
 
         CCNode* panel = nullptr;
         CCLabelBMFont* panelTitle = nullptr;               // current stage
@@ -438,6 +439,21 @@ namespace {
         ghost->setVisible(false);
         buf.ghostLayer->addChild(ghost);
         return ghost;
+    }
+
+    // v2.24: anything the ghosts left in their layer since they were made (trail fade-outs,
+    // effect nodes...) is removed with cleanup, which also takes it off the scheduler and
+    // the action manager. Without this every prediction left a few paused nodes behind,
+    // and the game iterates all of them every frame: the FPS sank a little with each save.
+    void sweepGhostLayer() {
+        if (!buf.ghostLayer) {
+            return;
+        }
+        auto* children = buf.ghostLayer->getChildren();
+        while (children && children->count() > buf.ghostLayerBase) {
+            auto* node = static_cast<CCNode*>(children->lastObject());
+            buf.ghostLayer->removeChild(node, true);
+        }
     }
 
     void sendButton(PlayLayer* layer, bool down) {
@@ -1128,6 +1144,10 @@ namespace {
             *end = SimEnd::StopSearch;
         }
         restoreObjects();
+        buf.ghost1->stopAllActions();
+        if (buf.ghost2) {
+            buf.ghost2->stopAllActions();
+        }
         buf.simulating = false;
         return safe ? horizon : survived;
     }
@@ -1866,6 +1886,7 @@ namespace {
                 sendButton(layer, buf.realInput);
             }
             tryAutoRelease(layer, player);
+            sweepGhostLayer();
             return;
         }
 
@@ -1899,7 +1920,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.23 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.24 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1933,6 +1954,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         loadMemory(level);
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
+        buf.ghostLayerBase = buf.ghostLayer->getChildrenCount();
 
         // In-game console (F9): hidden unless the player opens it.
         constexpr float W = PANEL_W;
@@ -2150,6 +2172,74 @@ class $modify(BufPlayerObject, PlayerObject) {
         PlayerObject::incrementJumps();
     }
 
+    // v2.24: the ghost runs the real player's code, which also spawns visual effects
+    // (circles, bump waves, trail fade-outs, spider run sprites, rotation actions). None
+    // of it matters for physics, and some of it was added to the real level, so ghosts
+    // skip all of it.
+    bool ghostEffect() {
+        return buf.simulating && isGhost(this);
+    }
+
+    void spawnCircle() {
+        if (!ghostEffect()) PlayerObject::spawnCircle();
+    }
+
+    void spawnDualCircle() {
+        if (!ghostEffect()) PlayerObject::spawnDualCircle();
+    }
+
+    void spawnPortalCircle(ccColor3B color, float startRadius) {
+        if (!ghostEffect()) PlayerObject::spawnPortalCircle(color, startRadius);
+    }
+
+    void spawnScaleCircle() {
+        if (!ghostEffect()) PlayerObject::spawnScaleCircle();
+    }
+
+    void playBumpEffect(int objectType, GameObject* object) {
+        if (!ghostEffect()) PlayerObject::playBumpEffect(objectType, object);
+    }
+
+    void playSpawnEffect() {
+        if (!ghostEffect()) PlayerObject::playSpawnEffect();
+    }
+
+    void createFadeOutDartStreak() {
+        if (!ghostEffect()) PlayerObject::createFadeOutDartStreak();
+    }
+
+    void fadeOutStreak2(float duration) {
+        if (!ghostEffect()) PlayerObject::fadeOutStreak2(duration);
+    }
+
+    void playDynamicSpiderRun() {
+        if (!ghostEffect()) PlayerObject::playDynamicSpiderRun();
+    }
+
+    void animatePlatformerJump(float scale) {
+        if (!ghostEffect()) PlayerObject::animatePlatformerJump(scale);
+    }
+
+    void runBallRotation(float speed) {
+        if (!ghostEffect()) PlayerObject::runBallRotation(speed);
+    }
+
+    void runBallRotation2() {
+        if (!ghostEffect()) PlayerObject::runBallRotation2();
+    }
+
+    void runNormalRotation(bool notNormalMode, float speed) {
+        if (!ghostEffect()) PlayerObject::runNormalRotation(notNormalMode, speed);
+    }
+
+    void toggleGhostEffect(GhostType type) {
+        if (!ghostEffect()) PlayerObject::toggleGhostEffect(type);
+    }
+
+    void activateStreak() {
+        if (!ghostEffect()) PlayerObject::activateStreak();
+    }
+
     void playSpiderDashEffect(CCPoint from, CCPoint to) {
         if (buf.simulating) {
             return;
@@ -2330,6 +2420,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             buf.simTicks = 0;
             auto start = std::chrono::steady_clock::now();
             bool held = intercept(this, down, isPlayer1);
+            sweepGhostLayer();
             if (buf.perfLog && buf.simRuns > 0) {
                 double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
                 say("perf: {:.2f} ms, {} runs, {} ghost ticks ({:.1f} us/tick)", ms, buf.simRuns, buf.simTicks,
