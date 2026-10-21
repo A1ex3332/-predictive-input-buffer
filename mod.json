@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.17.1",
+	"version": "v2.18.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -206,6 +206,12 @@
 			"default": 8,
 			"min": 2,
 			"max": 24
+		},
+		"cbf-sync": {
+			"type": "bool",
+			"name": "Click Between Frames sync",
+			"description": "With the Click Between Frames mod, a click lands partway through a physics tick. The prediction then starts from that exact moment, and delayed inputs land on the tick the prediction tested. Has no effect without CBF.",
+			"default": true
 		}
 	}
 }
