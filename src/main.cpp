@@ -153,7 +153,7 @@ namespace {
         bool practiceOnly = true;    // v2.1: only buffer in practice mode
         int groundHorizon = 130;     // v2.1: how far ahead cube/ball/spider predictions look
         int releaseShift = 0;        // v2.1: delay of the last delivered press, reused for its release
-        int waveHorizon = 64;        // v2.2: how far ahead wave predictions look (mini = 3/4 of it)
+        int waveHorizon = 65;        // v2.2: how far ahead wave predictions look (mini = 15 less)
         bool assumeOrbs = true;      // v2.2: the ghost clicks every orb it touches ("calculation mode")
         bool held1 = false, held2 = false;   // button state the ghosts are meant to be in
         bool auto1 = false, auto2 = false;   // an orb auto-click is currently held on this ghost
@@ -569,41 +569,53 @@ namespace {
             return std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs;
         };
 
-        int target = anyWave ? base + 10 : std::min(horizon, base + 12);
+        int target = std::min(horizon, base + 12);
         dbgBestK = 0;
         dbgBestRet = -1;
+        int waveBestK = 0;
+        int waveBestRet = base;
         for (int k = 1; k <= maxDelay; ++k) {
             SimEnd end;
-            // Reaching `target` always counts as good, so there's no need to simulate past it.
-            int ret = simulate(layer, p1, p2, dual, k, down, horizon, releaseAfter, std::min(target, horizon), &end);
+            // Wave needs the full run to compare gains; elsewhere reaching `target` is enough.
+            int ret = simulate(layer, p1, p2, dual, k, down, horizon, releaseAfter, anyWave ? horizon : target, &end);
             if (ret > dbgBestRet) {
                 dbgBestRet = ret;
                 dbgBestK = k;
             }
             if (end == SimEnd::StopSearch) {
-                return 0;
+                break;
             }
-            bool good;
             if (anyWave) {
-                // v2.1: surviving the whole look-ahead is always good. Before, a fully safe
-                // run was also asked to beat the original by `gain` ticks, and that bar rose
-                // by 2 per tick of delay, so late deaths (base ~30) could only be saved by
-                // +1 or +2 ticks. The target is also capped one tick below the horizon,
-                // otherwise bigger delays could never reach it.
-                good = ret >= horizon || ret >= std::min(target, horizon - 1);
-                target += 2;
+                // v4.6 wave rule: delaying a turn in a flat corridor naturally adds ~2 ticks
+                // per tick of delay against the opposite wall, so only buffer when the delayed
+                // run clearly clears a spike, saw or corner. A fully safe run needs
+                // 2*k+6 extra ticks and ends the search; otherwise keep the best run that
+                // gains at least 2*k+10 and beats the previous best by more than 2.
+                if (ret >= horizon && ret - base >= k * 2 + 6) {
+                    waveBestK = k;
+                    waveBestRet = ret;
+                    break;
+                }
+                if (ret >= base + k * 2 + 10 && ret > waveBestRet + 2) {
+                    waveBestK = k;
+                    waveBestRet = ret;
+                    if (ret >= horizon) {
+                        break;
+                    }
+                }
             }
-            else {
-                good = ret >= target;
-            }
-            if (good) {
+            else if (ret >= target) {
                 *landed = ret;
                 return k;
             }
             if (overBudget()) {
                 say("prediction budget hit at +{} ticks", k);
-                return 0;
+                break;
             }
+        }
+        if (anyWave && waveBestK > 0) {
+            *landed = waveBestRet;
+            return waveBestK;
         }
         return 0;
     }
@@ -702,7 +714,7 @@ namespace {
         int horizon = mini ? 28 : (anyWave ? 38 : (anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240)));
         if (anyWave) {
             int wh = std::clamp(buf.waveHorizon, 20, 160);
-            horizon = mini ? std::max(20, wh * 3 / 4) : wh;
+            horizon = mini ? std::max(20, wh - 15) : wh;  // v4.6: 65 normal / 50 mini
         }
         int maxDelay = anyWave ? buf.ticksWave : buf.ticksAll;
         if (maxDelay <= 0) {
@@ -796,7 +808,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.2 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.3 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
