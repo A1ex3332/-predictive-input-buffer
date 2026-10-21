@@ -591,7 +591,11 @@ namespace {
                 // run clearly clears a spike, saw or corner. A fully safe run needs
                 // 2*k+6 extra ticks and ends the search; otherwise keep the best run that
                 // gains at least 2*k+10 and beats the previous best by more than 2.
-                if (ret >= horizon && ret - base >= k * 2 + 6) {
+                // v2.3: the 2*k+6 bar only applies to late deaths (last 15 ticks of the
+                // look-ahead), where a delay can just push the crash out of view. Early deaths
+                // that a delay makes fully safe are real saves, so they always count.
+                bool lateDeath = base >= horizon - 15;
+                if (ret >= horizon && (!lateDeath || ret - base >= k * 2 + 6)) {
                     waveBestK = k;
                     waveBestRet = ret;
                     break;
@@ -899,6 +903,10 @@ class $modify(BufEditorLayer, LevelEditorLayer) {
 };
 
 class $modify(BufHardStreak, HardStreak) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("HardStreak::addPoint", HOOK_PRIORITY);
+    }
+
     void addPoint(CCPoint point) {
         if (buf.simulating) {
             return;
@@ -908,6 +916,10 @@ class $modify(BufHardStreak, HardStreak) {
 };
 
 class $modify(BufEffectGameObject, EffectGameObject) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("EffectGameObject::triggerObject", HOOK_PRIORITY);
+    }
+
     void triggerObject(GJBaseGameLayer* layer, int uniqueID, gd::vector<int> const* remapKeys) {
         if (buf.simulating) {
             return;
@@ -917,6 +929,10 @@ class $modify(BufEffectGameObject, EffectGameObject) {
 };
 
 class $modify(BufGameObject, GameObject) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("GameObject::playShineEffect", HOOK_PRIORITY);
+    }
+
     void playShineEffect() {
         if (buf.simulating) {
             return;
