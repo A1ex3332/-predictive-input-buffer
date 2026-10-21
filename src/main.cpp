@@ -35,6 +35,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <thread>
 #include <fstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -214,6 +215,21 @@ namespace {
     } buf;
 
     std::string stageText();
+
+    // v2.20: one time budget per click, shared by everything that click does (orb
+    // alignment, robot / spider / wave extra checks, the delay search, the learned-delay
+    // try, the moving-object check). Before, only the delay search was limited, so a press
+    // near an orb or in robot / spider could take several budgets' worth and hitch.
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
+
+    void startBudget(double ms) {
+        deadline = std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double, std::milli>(ms));
+    }
+
+    bool outOfTime() {
+        return std::chrono::steady_clock::now() > deadline;
+    }
 
     // v2.4 moving-object guard: last known position of each object the ghost collided with.
     struct Watched {
@@ -766,17 +782,24 @@ namespace {
         return Mod::get()->getSaveDir() / "memory" / (memoryKey + ".txt");
     }
 
+    // v2.20: the file is built here and written on a background thread, so saving the
+    // memory never stalls a frame.
     void saveMemory() {
         if (!memoryDirty || memoryKey.empty()) {
             return;
         }
-        std::error_code ec;
-        std::filesystem::create_directories(memoryFile().parent_path(), ec);
-        std::ofstream out(memoryFile(), std::ios::trunc);
+        std::string text;
+        text.reserve(memory.size() * 24);
         for (auto const& [slice, spot] : memory) {
-            out << slice << ' ' << spot.ok << ' ' << spot.bad << ' ' << spot.deaths << ' ' << spot.delaySum << '\n';
+            text += fmt::format("{} {} {} {} {}\n", slice, spot.ok, spot.bad, spot.deaths, spot.delaySum);
         }
         memoryDirty = false;
+        std::thread([path = memoryFile(), text = std::move(text)] {
+            std::error_code ec;
+            std::filesystem::create_directories(path.parent_path(), ec);
+            std::ofstream out(path, std::ios::trunc);
+            out << text;
+        }).detach();
     }
 
     void loadMemory(GJGameLevel* level) {
@@ -1244,7 +1267,7 @@ namespace {
                 //    longest wins (earliest on a tie), instead of simply the first that hits
                 //    the orb: where in the orb you click changes where the orb sends you.
                 int bestRet = -1;
-                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + 6); ++k) {
+                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + 6) && !outOfTime(); ++k) {
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
                     if (end == SimEnd::StopSearch) {
                         break;
@@ -1291,6 +1314,9 @@ namespace {
             return ret;
         }
         for (int margin : WAVE_TURN_MARGINS) {
+            if (outOfTime()) {
+                break;
+            }
             int turnAt = ret - margin;
             if (turnAt < WAVE_MIN_TURN) {
                 break;
@@ -1322,6 +1348,9 @@ namespace {
             return best;
         }
         for (int hold : ROBOT_HOLDS) {
+            if (outOfTime()) {
+                break;
+            }
             if (std::abs(hold - usual) < 3) {
                 continue;
             }
@@ -1350,6 +1379,9 @@ namespace {
             return ret;
         }
         for (int margin : SPIDER_RETAP) {
+            if (outOfTime()) {
+                break;
+            }
             int at = ret - margin;
             if (at < SPIDER_MIN_RETAP) {
                 break;
@@ -1368,8 +1400,6 @@ namespace {
 
     // Same rules as the cube: the smallest delay that is safe (or clearly better) wins.
     int searchSmallest(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score) {
-        using clock = std::chrono::steady_clock;
-        auto start = clock::now();
         int target = std::min(horizon, base + 12);
         dbgBestK = 0;
         dbgBestRet = -1;
@@ -1387,7 +1417,7 @@ namespace {
                 *landed = ret;
                 return k;
             }
-            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
+            if (outOfTime()) {
                 say("prediction budget hit at +{} ticks", k);
                 return 0;
             }
@@ -1400,8 +1430,6 @@ namespace {
     int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay, int base,
         int* landed) {
         marginUsed = false;
-        using clock = std::chrono::steady_clock;
-        auto start = clock::now();
         int target = std::min(horizon, base + 12);
         dbgBestK = 0;
         dbgBestRet = -1;
@@ -1431,7 +1459,7 @@ namespace {
                 }
                 return k;
             }
-            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
+            if (outOfTime()) {
                 say("prediction budget hit at +{} ticks", k);
                 return 0;
             }
@@ -1442,11 +1470,6 @@ namespace {
     // Find the smallest delay that clearly beats pressing now. 0 = don't buffer.
     int searchDelay(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, bool anyWave, int horizon, int maxDelay,
         int releaseAfter, int base, int* landed) {
-        using clock = std::chrono::steady_clock;
-        auto start = clock::now();
-        auto overBudget = [&] {
-            return std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs;
-        };
 
         int target = std::min(horizon, base + 12);
         dbgBestK = 0;
@@ -1487,7 +1510,7 @@ namespace {
                 *landed = ret;
                 return k;
             }
-            if (overBudget()) {
+            if (outOfTime()) {
                 say("prediction budget hit at +{} ticks", k);
                 break;
             }
@@ -1535,6 +1558,7 @@ namespace {
             buf.appliedInput = down;
             return false;
         }
+        startBudget(buf.budgetMs);
         // v2.4: the ghost never presses left/right, so platformer predictions are meaningless.
         if (layer->m_isPlatformer) {
             buf.appliedInput = down;
@@ -1707,7 +1731,7 @@ namespace {
         // v2.13 memory: the delay that worked here on earlier runs is tried first, so the
         // same gap gets the same save every time.
         int learned = memoryDelay(slice);
-        if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
+        if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46) && !outOfTime()) {
             int target = std::min(horizon, base + 12);
             SimEnd e;
             int ret = cubeStyleWave ? waveScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
@@ -1737,7 +1761,7 @@ namespace {
             buf.appliedInput = down;
             return false;
         }
-        if (buf.avoidMovers) {
+        if (buf.avoidMovers && !outOfTime()) {
             // One extra run of the chosen delay with the moving-object watch on. (Watching
             // in every search run made cube searches hit the time budget.)
             buf.trackMovers = true;
@@ -1807,6 +1831,7 @@ namespace {
         }
         bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
 
+        startBudget(buf.budgetMs / 2);
         int window = std::clamp(buf.autoWindow, 2, 24);
         buf.sawMover = false;
         buf.skipPress = true;
@@ -1903,7 +1928,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
     }
-    say("v2.19 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.20 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

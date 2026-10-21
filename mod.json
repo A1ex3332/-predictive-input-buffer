@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.19.0",
+	"version": "v2.20.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -28,8 +28,8 @@
 		"sim-budget-ms": {
 			"type": "float",
 			"name": "Prediction time budget (ms)",
-			"description": "Max time spent predicting per click. Higher = finds longer saves on big windows, but may hitch on dense levels.",
-			"default": 8.0,
+			"description": "Max time one click may spend on predictions (everything it does: search, orbs, robot / spider / wave checks). Higher = finds bigger saves, but a click can hitch the game. 4 ms is smooth on most PCs; raise it if you see 'prediction budget hit' and the game stays smooth.",
+			"default": 4.0,
 			"min": 1.0,
 			"max": 30.0
 		},
