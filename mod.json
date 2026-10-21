@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.12.0",
+	"version": "v2.13.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -168,6 +168,12 @@
 			"name": "Robot auto-release (practice only)",
 			"description": "While you hold a robot jump, if holding longer would crash within the auto-release window and letting go survives, the mod lets go for you. Your own release is then ignored. Practice mode only.",
 			"default": false
+		},
+		"level-memory": {
+			"type": "bool",
+			"name": "Level memory (learns from your runs)",
+			"description": "Remembers, per level and per spot, which delays worked, where saves ended in deaths and where you keep dying. Delays that worked before are tried first; spots where saves keep failing are left alone; orange dots in the path view mark spots where you die a lot. F11 forgets the current level.",
+			"default": true
 		}
 	}
 }

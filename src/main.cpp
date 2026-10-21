@@ -29,7 +29,12 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cctype>
+#include <climits>
+#include <cmath>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -179,6 +184,7 @@ namespace {
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
         bool robotSmart = true;      // v2.12: robot presses count as safe if some hold length survives
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
+        bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
         int simTick = 0;             // v2.6: tick of the current run
@@ -229,6 +235,7 @@ namespace {
         if (starts("skip") || starts("prediction budget")) return { 255, 180, 80 };
         if (starts("drift")) return { 255, 240, 150 };
         if (starts("F6") || starts("v2") || starts("path")) return { 255, 215, 90 };
+        if (starts("memory")) return { 255, 150, 220 };
         return { 255, 255, 255 };
     }
 
@@ -306,6 +313,7 @@ namespace {
         buf.orbAlign = mod->getSettingValue<bool>("orb-align");
         buf.orbAlignGround = mod->getSettingValue<bool>("orb-align-ground");
         buf.fullState = mod->getSettingValue<bool>("full-ghost-state");
+        buf.learn = mod->getSettingValue<bool>("level-memory");
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
@@ -674,6 +682,181 @@ namespace {
         ++drift.index;
     }
 
+    // v2.13 level memory. Each level is cut into half-block slices along x. Every buffer
+    // decision is remembered at the slice where it was made, and ~0.4 s later it is
+    // scored: still alive = it worked, died = it didn't. Over your runs this learns, per
+    // spot, which delays work there, where saves keep failing (the ghost doesn't match
+    // the level there: triggers, moving objects) and where you keep dying. Stored per
+    // level in the mod's save folder, so it carries over between sessions.
+    constexpr float SLICE = 15.f;          // half a block
+    constexpr int OUTCOME_TICKS = 90;      // alive this long after a decision = it worked
+
+    struct Spot {
+        uint32_t ok = 0;        // saves here that you survived
+        uint32_t bad = 0;       // saves here followed by a death
+        uint32_t deaths = 0;    // deaths after any decision here
+        uint32_t delaySum = 0;  // sum of the delays of the saves that worked
+    };
+
+    std::unordered_map<int, Spot> memory;
+    std::string memoryKey;
+    bool memoryDirty = false;
+    int memoryUpdates = 0;
+
+    struct PendingOutcome {
+        bool active = false;
+        int slice = 0;
+        int tick = 0;
+        int delay = 0;
+    } pending;
+
+    int sliceOf(PlayerObject* p) {
+        return static_cast<int>(std::floor(p->m_position.x / SLICE));
+    }
+
+    // A spot plus its two neighbours: the same gap is never hit at exactly the same x.
+    Spot spotAround(int slice) {
+        Spot sum;
+        for (int s = slice - 1; s <= slice + 1; ++s) {
+            auto it = memory.find(s);
+            if (it == memory.end()) {
+                continue;
+            }
+            sum.ok += it->second.ok;
+            sum.bad += it->second.bad;
+            sum.deaths += it->second.deaths;
+            sum.delaySum += it->second.delaySum;
+        }
+        return sum;
+    }
+
+    std::filesystem::path memoryFile() {
+        return Mod::get()->getSaveDir() / "memory" / (memoryKey + ".txt");
+    }
+
+    void saveMemory() {
+        if (!memoryDirty || memoryKey.empty()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(memoryFile().parent_path(), ec);
+        std::ofstream out(memoryFile(), std::ios::trunc);
+        for (auto const& [slice, spot] : memory) {
+            out << slice << ' ' << spot.ok << ' ' << spot.bad << ' ' << spot.deaths << ' ' << spot.delaySum << '\n';
+        }
+        memoryDirty = false;
+    }
+
+    void loadMemory(GJGameLevel* level) {
+        memory.clear();
+        memoryDirty = false;
+        memoryUpdates = 0;
+        pending.active = false;
+        memoryKey.clear();
+        if (!level) {
+            return;
+        }
+        int id = level->m_levelID.value();
+        if (id > 0) {
+            memoryKey = fmt::format("level_{}", id);
+        }
+        else {
+            std::string name = level->m_levelName;
+            for (auto& c : name) {
+                if (!std::isalnum(static_cast<unsigned char>(c))) {
+                    c = '_';
+                }
+            }
+            memoryKey = "local_" + name;
+        }
+        std::ifstream in(memoryFile());
+        int slice;
+        Spot spot;
+        while (in >> slice >> spot.ok >> spot.bad >> spot.deaths >> spot.delaySum) {
+            memory[slice] = spot;
+        }
+        if (!memory.empty()) {
+            say("memory: {} spots learned on this level", memory.size());
+        }
+    }
+
+    void memoryChanged() {
+        memoryDirty = true;
+        if (++memoryUpdates % 10 == 0) {
+            saveMemory();
+        }
+    }
+
+    void creditPending() {
+        if (!pending.active) {
+            return;
+        }
+        pending.active = false;
+        if (pending.delay > 0) {
+            auto& spot = memory[pending.slice];
+            ++spot.ok;
+            spot.delaySum += pending.delay;
+            memoryChanged();
+        }
+    }
+
+    // Called for every decision: remembers it until it can be scored.
+    void memoryNote(PlayerObject* p1, int delay) {
+        if (!buf.learn || memoryKey.empty()) {
+            return;
+        }
+        // A decision that lived long enough before the next one counts as having worked.
+        if (pending.active && tickCount - pending.tick >= 30) {
+            creditPending();
+        }
+        pending = { true, sliceOf(p1), tickCount, delay };
+    }
+
+    void memoryTick() {
+        if (pending.active && tickCount - pending.tick >= OUTCOME_TICKS) {
+            creditPending();
+        }
+    }
+
+    void memoryDeath() {
+        if (!pending.active) {
+            return;
+        }
+        pending.active = false;
+        auto& spot = memory[pending.slice];
+        ++spot.deaths;
+        if (pending.delay > 0) {
+            ++spot.bad;
+        }
+        memoryChanged();
+    }
+
+    // Saves made here keep ending in deaths: the ghost is wrong at this spot, leave it alone.
+    bool memorySaysSkip(int slice) {
+        if (!buf.learn) {
+            return false;
+        }
+        auto spot = spotAround(slice);
+        return spot.bad >= 2 && spot.bad > spot.ok;
+    }
+
+    // The delay that has worked here before (average of the saves you survived), or 0.
+    int memoryDelay(int slice) {
+        if (!buf.learn) {
+            return 0;
+        }
+        auto spot = spotAround(slice);
+        if (spot.ok < 2) {
+            return 0;
+        }
+        return static_cast<int>(std::lround(static_cast<double>(spot.delaySum) / spot.ok));
+    }
+
+    bool memoryRisky(int slice) {
+        auto spot = spotAround(slice);
+        return spot.deaths >= 3;
+    }
+
     void snapshotObject(GameObject* object) {
         if (!object || buf.simUsed.contains(object)) {
             return;
@@ -934,6 +1117,17 @@ namespace {
             auto delayed = recordRun(layer, p1, p2, dual, chosen, down, horizon, releaseAfter, &died);
             drawPath(delayed, chosen, green, died);
         }
+        // v2.13: spots on this path where the memory has seen you die a lot.
+        if (buf.learn && !memory.empty()) {
+            int last = INT_MIN;
+            for (auto const& point : now) {
+                int slice = static_cast<int>(std::floor(point.x / SLICE));
+                if (slice != last && memoryRisky(slice)) {
+                    buf.pathNode->drawDot(point, 3.5f, { 1.f, 0.6f, 0.1f, 0.95f });
+                }
+                last = slice;
+            }
+        }
     }
 
     // v2.4: record the ghost run for the input that was actually made (drift check).
@@ -952,6 +1146,7 @@ namespace {
 
     // After every buffer decision: drift check + path view for the input the game gets.
     void decided(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter) {
+        memoryNote(p1, delay);
         startDrift(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
         showPaths(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
     }
@@ -1347,7 +1542,7 @@ namespace {
         bool grounded = p1->m_isOnGround && (!p2 || p2->m_isOnGround);
         if (down && !anyWave && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
             int orbLanded = 0;
-            int k = alignOrb(layer, p1, p2, dual, horizon, releaseAfter, &orbLanded);
+            int k = memorySaysSkip(sliceOf(p1)) ? 0 : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, &orbLanded);
             if (k > 0) {
                 say("ORB press +{}t ({:g}f) -> {}t", k, k * TICK, orbLanded);
                 decided(layer, p1, p2, dual, k, down, horizon, releaseAfter);
@@ -1372,10 +1567,39 @@ namespace {
             return false;
         }
 
+        // v2.13 memory: saves at this spot kept ending in deaths, so the prediction can't be
+        // trusted here. Leave the input alone.
+        int slice = sliceOf(p1);
+        if (memorySaysSkip(slice)) {
+            say("memory: saves here failed before, input left alone");
+            decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            buf.appliedInput = down;
+            return false;
+        }
+
         int landed = 0;
-        int saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
+        int saved = 0;
+        bool fromMemory = false;
+        // v2.13 memory: the delay that worked here on earlier runs is tried first, so the
+        // same gap gets the same save every time.
+        int learned = memoryDelay(slice);
+        if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
+            int target = std::min(horizon, base + 12);
+            SimEnd e;
+            int ret = cubeStyleWave ? waveScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
+                    : robotPress    ? robotScore(layer, p1, p2, dual, learned, horizon, target, &e)
+                                    : simulateOrbs(layer, p1, p2, dual, learned, down, horizon, releaseAfter, target, &e);
+            if (ret >= target) {
+                saved = learned;
+                landed = ret;
+                fromMemory = true;
+            }
+        }
+        if (saved <= 0) {
+            saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
                   : robotPress    ? searchRobot(layer, p1, p2, dual, horizon, maxDelay, base, &landed)
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
+        }
         if (saved <= 0) {
             say("no save: {} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", base, maxDelay,
                 dbgBestK, dbgBestRet, horizon);
@@ -1401,7 +1625,9 @@ namespace {
             releaseAfter = robotUsedHold;  // the path view / drift check show the hold that works
         }
         say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay,
-            cubeStyleWave && marginUsed ? "  +margin" : (robotPress ? fmt::format("  hold {}t", robotUsedHold) : std::string()));
+            fromMemory ? std::string("  (memory)")
+            : cubeStyleWave && marginUsed ? std::string("  +margin")
+            : robotPress ? fmt::format("  hold {}t", robotUsedHold) : std::string());
         decided(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
         buf.shift = saved;
         queueInput(saved, down);
@@ -1535,7 +1761,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.12 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.13 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1554,6 +1780,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.autoReleased = false;
         buf.rapid = 0;
         forgetPress();
+        memoryDeath();
         finishDrift(" (died)");
         PlayLayer::destroyPlayer(player, object);
     }
@@ -1565,6 +1792,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         dropGhosts();
         readSettings();
         applyStage();
+        loadMemory(level);
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
 
@@ -1635,7 +1863,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6  stage      F9  hide console      F10  path view", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6 stage    F9 console    F10 path view    F11 forget level", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -1659,6 +1887,8 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void onQuit() {
+        saveMemory();
+        memoryKey.clear();
         dropGhosts();
         PlayLayer::onQuit();
     }
@@ -1747,6 +1977,7 @@ class $modify(BufPlayerObject, PlayerObject) {
         if (layer && this == layer->m_player1) {
             ++tickCount;
             driftStep(this);
+            memoryTick();
             if (buf.enabled) {
                 deliverPending(layer, this);
             }
@@ -1807,6 +2038,13 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
             else if (key == KEY_F9) {
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
+            }
+            else if (key == KEY_F11) {
+                memory.clear();
+                pending.active = false;
+                memoryDirty = true;
+                saveMemory();
+                say("memory for this level cleared");
             }
             else if (key == KEY_F10) {
                 buf.showPath = !buf.showPath;

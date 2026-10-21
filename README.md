@@ -10,7 +10,7 @@
 Install the Geode CLI and SDK, then run:  geode build
 
 ## Keys
-F6 cycle stage | F9 open/close the in-game console | F10 path view
+F6 cycle stage | F9 open/close the in-game console | F10 path view | F11 forget this level's memory
 
 Edit "yourname" in mod.json first. Practice use only; do not use for verified or leaderboard runs.
 
@@ -24,3 +24,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.8: the ghost copies the full player state (slopes, reverse, sideways, forces, dash), size portals are simulated and mirror portals no longer stop the prediction.
 - v2.10: wave tries 3 turn-away points, stops runs as soon as they are good enough (faster), and centers saves with a 1-tick safety margin. Console is see-through.
 - v2.12 robot: presses count as safe if some hold length survives; robot auto-release (practice only).
+- v2.13 level memory: learns per spot from your runs (delays that worked are tried first, spots where saves failed are left alone, risky spots marked in the path view).
