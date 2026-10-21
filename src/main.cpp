@@ -530,6 +530,10 @@ namespace {
         return safe ? horizon : survived;
     }
 
+    // v2.1: best delayed run seen by the last search (shown in the "no save" log line)
+    int dbgBestK = 0;
+    int dbgBestRet = -1;
+
     // Find the smallest delay that clearly beats pressing now. 0 = don't buffer.
     int searchDelay(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, bool anyWave, int horizon, int maxDelay,
         int releaseAfter, int base, int* landed) {
@@ -540,19 +544,28 @@ namespace {
         };
 
         int target = anyWave ? base + 10 : std::min(horizon, base + 12);
-        int gain = 6;
+        dbgBestK = 0;
+        dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
             SimEnd end;
             // Reaching `target` always counts as good, so there's no need to simulate past it.
             int ret = simulate(layer, p1, p2, dual, k, down, horizon, releaseAfter, std::min(target, horizon), &end);
+            if (ret > dbgBestRet) {
+                dbgBestRet = ret;
+                dbgBestK = k;
+            }
             if (end == SimEnd::StopSearch) {
                 return 0;
             }
             bool good;
             if (anyWave) {
-                good = ret < horizon ? ret >= target : (ret - base >= gain || ret >= target);
+                // v2.1: surviving the whole look-ahead is always good. Before, a fully safe
+                // run was also asked to beat the original by `gain` ticks, and that bar rose
+                // by 2 per tick of delay, so late deaths (base ~30) could only be saved by
+                // +1 or +2 ticks. The target is also capped one tick below the horizon,
+                // otherwise bigger delays could never reach it.
+                good = ret >= horizon || ret >= std::min(target, horizon - 1);
                 target += 2;
-                gain += 2;
             }
             else {
                 good = ret >= target;
@@ -682,7 +695,8 @@ namespace {
         int landed = 0;
         int saved = searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
         if (saved <= 0) {
-            say("no save: {} dies in {}t (max {}t)", down ? "press" : "release", base, maxDelay);
+            say("no save: {} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", base, maxDelay,
+                dbgBestK, dbgBestRet, horizon);
             buf.appliedInput = down;
             return false;
         }
