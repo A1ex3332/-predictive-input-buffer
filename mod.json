@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.1.0",
+	"version": "v2.2.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -58,6 +58,20 @@
 			"name": "Practice mode only",
 			"description": "ON: only buffer inputs in practice mode. OFF: buffer in every run.",
 			"default": false
+		},
+		"wave-horizon": {
+			"type": "int",
+			"name": "Wave lookahead (ticks)",
+			"description": "How far ahead the wave prediction looks (mini wave uses 3/4 of it). The old value was 38. Longer sees crashes further away but costs more time per click.",
+			"default": 64,
+			"min": 20,
+			"max": 160
+		},
+		"orb-assume-hit": {
+			"type": "bool",
+			"name": "Orbs: assume you click them (calculation mode)",
+			"description": "The prediction clicks every orb it touches, as if you hit it on time. Turn off if it predicts deaths for orbs you normally skip.",
+			"default": true
 		}
 	}
 }
