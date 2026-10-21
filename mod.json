@@ -1,54 +1,63 @@
 {
-  "geode": "5.11.2",
-  "gd": {
-    "win": "*",
-    "android": "*",
-    "mac": "*",
-    "ios": "*"
-  },
-  "id": "yourname.predictive_input_buffer",
-  "name": "Predictive Input Buffer",
-  "version": "v1.0.0",
-  "developer": "yourname",
-  "description": "Practice-mode predictive input buffer. F6 cycles stages.",
-  "settings": {
-    "lookahead": {
-      "type": "int",
-      "default": 120,
-      "min": 10,
-      "max": 480,
-      "name": "Lookahead (ticks)"
-    },
-    "wave-lookahead": {
-      "type": "int",
-      "default": 90,
-      "min": 10,
-      "max": 480,
-      "name": "Wave lookahead (ticks)"
-    },
-    "safety-margin": {
-      "type": "int",
-      "default": 0,
-      "min": 0,
-      "max": 2,
-      "name": "Safety margin (ticks)"
-    },
-    "delay-offset": {
-      "type": "int",
-      "default": 0,
-      "min": -2,
-      "max": 2,
-      "name": "Delay offset (ticks)"
-    },
-    "fix-releases": {
-      "type": "bool",
-      "default": true,
-      "name": "Also fix releases (ship / wave)"
-    },
-    "debug": {
-      "type": "bool",
-      "default": true,
-      "name": "Debug log"
-    }
-  }
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081"
+	},
+	"version": "v2.1.0",
+	"id": "ai.predictivebuffer",
+	"name": "Predictive Input Buffer",
+	"developer": "lilWC",
+	"description": "Trajectory-based input buffer: delays early clicks/releases by up to 8+ frames, with orb, pad and portal-aware prediction.",
+	"settings": {
+		"custom-ticks": {
+			"type": "int",
+			"name": "Custom stage: max delay (ticks)",
+			"description": "Max delay for the CUSTOM F6 stage, all modes except wave. 4 ticks = 1 frame at 60fps.",
+			"default": 40,
+			"min": 1,
+			"max": 64
+		},
+		"custom-wave-ticks": {
+			"type": "int",
+			"name": "Custom stage: max wave delay (ticks)",
+			"description": "Max delay for the CUSTOM F6 stage while in wave.",
+			"default": 20,
+			"min": 0,
+			"max": 64
+		},
+		"sim-budget-ms": {
+			"type": "float",
+			"name": "Prediction time budget (ms)",
+			"description": "Max time spent predicting per click. Higher = finds longer saves on big windows, but may hitch on dense levels.",
+			"default": 8.0,
+			"min": 1.0,
+			"max": 30.0
+		},
+		"smart-prediction": {
+			"type": "bool",
+			"name": "Orb / pad / portal prediction",
+			"description": "Let the ghost use orbs, pads, gravity portals and speed portals. Turn off if you see glitches with objects.",
+			"default": true
+		},
+		"debug-console": {
+			"type": "bool",
+			"name": "Debug console window",
+			"description": "Also open a separate Windows console with the same log as the in-game K panel. Needs a restart.",
+			"default": false
+		},
+		"ground-horizon": {
+			"type": "int",
+			"name": "Cube / ball lookahead (ticks)",
+			"description": "How far ahead the prediction looks for cube, ball and spider. A cube jump lasts about 100 ticks, so the old 48 never saw the landing. Higher = catches later hits but costs more time per click.",
+			"default": 130,
+			"min": 48,
+			"max": 240
+		},
+		"practice-only": {
+			"type": "bool",
+			"name": "Practice mode only",
+			"description": "ON: only buffer inputs in practice mode. OFF: buffer in every run.",
+			"default": false
+		}
+	}
 }
