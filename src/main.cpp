@@ -171,6 +171,7 @@ namespace {
         int autoWindow = 6;          // v2.4: hold must die within this many ticks to auto-release
         bool autoReleased = false;   // v2.4: we released for you; your real release is swallowed
         int spamGap = 16;            // v2.5.2: inputs closer than this (ticks) count toward wave spam
+        bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
         int simTick = 0;             // v2.6: tick of the current run
@@ -268,6 +269,7 @@ namespace {
         buf.driftCheck = mod->getSettingValue<bool>("drift-check");
         buf.spamGap = static_cast<int>(mod->getSettingValue<int64_t>("wave-spam-gap"));
         buf.orbAlign = mod->getSettingValue<bool>("orb-align");
+        buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
     }
 
@@ -579,7 +581,7 @@ namespace {
     enum class SimEnd { Ok, StopSearch };
 
     // Returns ticks survived after the input (horizon = fully safe).
-    // releaseAfter: ticks after the press at which the ghost lets go (-1 = hold).
+    // releaseAfter: ticks after the input at which the ghost does the opposite (-1 = never).
     // stopAt: stop as soon as this many ticks were survived (the caller already knows
     // that's good enough), instead of always running the full horizon.
     int simulate(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter,
@@ -605,7 +607,7 @@ namespace {
         // v4.6 wave: before a delayed input fires, the ghost is in the opposite state
         // (holding before a delayed release, released before a delayed press).
         bool waveRun = p1->m_isDart || (second && p2->m_isDart);
-        if (waveRun && delay > 0 && !buf.skipPress) {
+        if (buf.waveV46 && waveRun && delay > 0 && !buf.skipPress) {
             pressGhost(buf.ghost1, !down);
             if (second) {
                 pressGhost(buf.ghost2, !down);
@@ -640,9 +642,10 @@ namespace {
                 }
             }
             if (releaseAfter >= 0 && tick == delay + releaseAfter) {
-                pressGhost(buf.ghost1, false);
+                // let go of a press (or, for a wave release, press again: the turn back)
+                pressGhost(buf.ghost1, !down);
                 if (second) {
-                    pressGhost(buf.ghost2, false);
+                    pressGhost(buf.ghost2, !down);
                 }
             }
 
@@ -797,6 +800,61 @@ namespace {
     int dbgBestK = 0;
     int dbgBestRet = -1;
 
+    // v2.7 wave scoring, the wave version of the cube's "landed safely". A wave never
+    // lands, so a run that keeps going one way eventually hits a wall even in a normal
+    // corridor, where you'd simply turn. So: if the run crashes, try turning back a bit
+    // before the crash; if that turn survives, you had time to react and the run counts
+    // as safe. Only crashes you couldn't have turned away from count as deaths.
+    constexpr int WAVE_TURN_MARGIN = 6;   // turn this many ticks before the crash
+    constexpr int WAVE_MIN_TURN = 6;      // a turn sooner than this after the input is too fast to count
+    constexpr int WAVE_ESCAPE = 16;       // the turn must then survive this many ticks
+
+    int waveScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, SimEnd* end) {
+        int ret = simulateOrbs(layer, p1, p2, dual, delay, down, horizon, -1, horizon, end);
+        if (ret >= horizon || *end == SimEnd::StopSearch) {
+            return ret;
+        }
+        int turnAt = ret - WAVE_TURN_MARGIN;
+        if (turnAt < WAVE_MIN_TURN) {
+            return ret;
+        }
+        int length = std::min(horizon, turnAt + WAVE_ESCAPE);
+        SimEnd turnEnd;
+        int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
+        return turned >= length ? horizon : ret;
+    }
+
+    // v2.7 wave search, same rules as the cube: the smallest delay that is safe (or
+    // clearly better than now) wins, so turns are only held back as long as needed.
+    int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay, int base,
+        int* landed) {
+        using clock = std::chrono::steady_clock;
+        auto start = clock::now();
+        int target = std::min(horizon, base + 12);
+        dbgBestK = 0;
+        dbgBestRet = -1;
+        for (int k = 1; k <= maxDelay; ++k) {
+            SimEnd end;
+            int ret = waveScore(layer, p1, p2, dual, k, down, horizon, &end);
+            if (ret > dbgBestRet) {
+                dbgBestRet = ret;
+                dbgBestK = k;
+            }
+            if (end == SimEnd::StopSearch) {
+                return 0;
+            }
+            if (ret >= target) {
+                *landed = ret;
+                return k;
+            }
+            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
+                say("prediction budget hit at +{} ticks", k);
+                return 0;
+            }
+        }
+        return 0;
+    }
+
     // Find the smallest delay that clearly beats pressing now. 0 = don't buffer.
     int searchDelay(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, bool anyWave, int horizon, int maxDelay,
         int releaseAfter, int base, int* landed) {
@@ -930,9 +988,10 @@ namespace {
             return false;
         }
 
-        // v4.6 wave: while a delayed input waits, a quick opposite input fires one tick
-        // after it; pressing the same way again cancels that.
-        if (!buf.queue.empty() && anyWave) {
+        // v4.6 wave mode only: while a delayed input waits, a quick opposite input fires
+        // one tick after it; pressing the same way again cancels that. (The default wave
+        // mode shifts it like the cube does, below, so your zigzag keeps its shape.)
+        if (!buf.queue.empty() && anyWave && buf.waveV46) {
             auto first = buf.queue.front();
             buf.queue.erase(buf.queue.begin() + 1, buf.queue.end());
             if (down != first.down) {
@@ -1008,7 +1067,9 @@ namespace {
         buf.sawMover = false;
         buf.trackMovers = buf.avoidMovers;
         SimEnd end;
-        int base = simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
+        bool cubeStyleWave = anyWave && !buf.waveV46;
+        int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, &end)
+                                 : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.trackMovers = false;
         if (base >= horizon) {
             startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
@@ -1017,7 +1078,8 @@ namespace {
         }
 
         int landed = 0;
-        int saved = searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
+        int saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
+                                  : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
         if (saved <= 0) {
             say("no save: {} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", base, maxDelay,
                 dbgBestK, dbgBestRet, horizon);
@@ -1161,7 +1223,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.6 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.7 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

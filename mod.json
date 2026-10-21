@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.6.0",
+	"version": "v2.7.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -126,6 +126,12 @@
 			"default": 16,
 			"min": 1,
 			"max": 64
+		},
+		"wave-v46": {
+			"type": "bool",
+			"name": "Wave: old v4.6 logic",
+			"description": "Use the old v4.6 wave rules (big-gain bar, 1-tick queued opposite). Off = the cube-style wave: a crash you could still turn away from counts as safe, and the smallest delay that clears the obstacle wins.",
+			"default": false
 		}
 	}
 }
