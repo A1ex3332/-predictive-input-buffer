@@ -171,6 +171,11 @@ namespace {
         int autoWindow = 6;          // v2.4: hold must die within this many ticks to auto-release
         bool autoReleased = false;   // v2.4: we released for you; your real release is swallowed
         int spamGap = 16;            // v2.5.2: inputs closer than this (ticks) count toward wave spam
+        bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
+        int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
+        int simTick = 0;             // v2.6: tick of the current run
+        int firstOrbTick = -1;       // v2.6: first tick the current run touched an orb
+        int orbUsedTick = -1;        // v2.6: first tick the current run actually used an orb
         bool driftCheck = false;     // v2.4: log how far the real player strays from the prediction
         std::vector<CCPoint>* recordPath = nullptr;  // v2.4: ghost1 positions of the current run
 
@@ -262,6 +267,8 @@ namespace {
         buf.autoWindow = static_cast<int>(mod->getSettingValue<int64_t>("auto-release-window"));
         buf.driftCheck = mod->getSettingValue<bool>("drift-check");
         buf.spamGap = static_cast<int>(mod->getSettingValue<int64_t>("wave-spam-gap"));
+        buf.orbAlign = mod->getSettingValue<bool>("orb-align");
+        buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
     }
 
     void applyStage() {
@@ -584,6 +591,8 @@ namespace {
         buf.simulating = true;
         buf.ghostDied = false;
         buf.ghostHitPortal = false;
+        buf.firstOrbTick = -1;
+        buf.orbUsedTick = -1;
 
         bool second = dual && buf.ghost2 && p2;
         copyState(buf.ghost1, p1);
@@ -623,6 +632,7 @@ namespace {
         bool safe = false;
 
         for (; tick < total; ++tick) {
+            buf.simTick = tick;
             if (tick == delay && !buf.skipPress) {
                 pressGhost(buf.ghost1, down);
                 if (second) {
@@ -743,6 +753,44 @@ namespace {
     int fullWaveHorizon(bool mini) {
         int wh = std::clamp(buf.waveHorizon, 20, 160);
         return mini ? std::max(20, wh - 15) : wh;  // v4.6: 65 normal / 50 mini
+    }
+
+    // v2.6 orb alignment: a press made a little before reaching an orb would be wasted
+    // (or jump off the ground instead). Find the delay that lands the press inside the
+    // orb, like the cube buffer does for jumps. Returns that delay, or 0.
+    int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int* landed) {
+        int window = std::clamp(buf.orbWindow, 1, 64);
+        int found = 0;
+        SimEnd end;
+        buf.orbClick = false;  // the press being tested is the orb click
+
+        // 1. Cheap probe: without pressing, does the ghost reach an orb soon?
+        buf.skipPress = true;
+        simulate(layer, p1, p2, dual, 0, true, window + 2, -1, window + 2, &end);
+        buf.skipPress = false;
+        int touch = buf.firstOrbTick;
+
+        if (touch >= 0 && touch <= window) {
+            // 2. Pressing now already uses an orb (e.g. held into it): nothing to align.
+            int now = simulate(layer, p1, p2, dual, 0, true, horizon, releaseAfter, horizon, &end);
+            if (buf.orbUsedTick < 0) {
+                // 3. Earliest delay around the touch tick whose press really uses the orb,
+                //    and that doesn't crash sooner than missing the orb would.
+                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + 3); ++k) {
+                    int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
+                    if (end == SimEnd::StopSearch) {
+                        break;
+                    }
+                    if (buf.orbUsedTick >= 0 && ret >= std::min(now, horizon)) {
+                        *landed = ret;
+                        found = k;
+                        break;
+                    }
+                }
+            }
+        }
+        buf.orbClick = buf.assumeOrbs;
+        return found;
     }
 
     // v2.1: best delayed run seen by the last search (shown in the "no save" log line)
@@ -945,6 +993,18 @@ namespace {
             releaseAfter = anyRobot ? robotHold.pick(-1, 50) : holdEstimate();
         }
 
+        if (down && !anyWave && buf.orbAlign && buf.smart) {
+            int orbLanded = 0;
+            int k = alignOrb(layer, p1, p2, dual, horizon, releaseAfter, &orbLanded);
+            if (k > 0) {
+                say("ORB press +{}t ({:g}f) -> {}t", k, k * TICK, orbLanded);
+                startDrift(layer, p1, p2, dual, k, down, horizon, releaseAfter);
+                buf.shift = k;
+                queueInput(k, down);
+                return true;
+            }
+        }
+
         buf.sawMover = false;
         buf.trackMovers = buf.avoidMovers;
         SimEnd end;
@@ -1101,7 +1161,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.5.2 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.6 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1285,8 +1345,19 @@ class $modify(BufPlayerObject, PlayerObject) {
                 return;
             }
             snapshotObject(ring);
+            if (buf.orbUsedTick < 0) {
+                buf.orbUsedTick = buf.simTick;
+            }
         }
         PlayerObject::ringJump(ring, skipCheck);
+    }
+
+    // Dash orbs don't go through ringJump.
+    void startDashing(DashRingObject* ring) {
+        if (buf.simulating && isGhost(this) && buf.orbUsedTick < 0) {
+            buf.orbUsedTick = buf.simTick;
+        }
+        PlayerObject::startDashing(ring);
     }
 };
 
@@ -1407,6 +1478,9 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             }
             snapshotObject(ring);
             buf.touchedOrb = true;
+            if (buf.firstOrbTick < 0) {
+                buf.firstOrbTick = buf.simTick;
+            }
         }
         GJBaseGameLayer::playerTouchedRing(player, ring);
 

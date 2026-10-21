@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.5.2",
+	"version": "v2.6.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -112,6 +112,20 @@
 			"default": 16,
 			"min": 4,
 			"max": 40
+		},
+		"orb-align": {
+			"type": "bool",
+			"name": "Orb alignment",
+			"description": "If you press a little before reaching an orb (and the press wouldn't hit it), the press is held back until you're inside the orb so it hits. Works for every mode except ship and wave. Needs 'Orb / pad / portal prediction' on.",
+			"default": true
+		},
+		"orb-align-ticks": {
+			"type": "int",
+			"name": "Orb alignment: max delay (ticks)",
+			"description": "How early a press may be and still be moved onto the orb. 16 ticks = 4 frames at 60fps.",
+			"default": 16,
+			"min": 1,
+			"max": 64
 		}
 	}
 }

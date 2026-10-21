@@ -20,3 +20,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - Don't buffer near moving objects (experimental, off by default): inputs are left untouched when the ghost's path hits recently moved spikes/blocks.
 - Drift check (debug): logs in the K panel how far you strayed from the prediction after each input.
 - Wave buffering uses the v4.6 rules exactly (65/50 lookahead, gain bar, opposite-state ghost, 1-tick queued opposite). Platformer levels are never buffered.
+- Orb alignment (v2.6): a press made up to 4 frames before an orb is held back until you're inside the orb, so it hits.
