@@ -22,3 +22,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - Wave (v2.7): cube-style. A crash you could still turn away from counts as safe; the smallest delay that clears the obstacle wins; inputs during a delay keep their rhythm. "Wave: old v4.6 logic" brings back the v4.6 rules. Platformer levels are never buffered.
 - Orb alignment (v2.6): a press made up to 4 frames before an orb is held back until you're inside the orb, so it hits.
 - v2.8: the ghost copies the full player state (slopes, reverse, sideways, forces, dash), size portals are simulated and mirror portals no longer stop the prediction.
+- v2.10: wave tries 3 turn-away points, stops runs as soon as they are good enough (faster), and centers saves with a 1-tick safety margin. Console is see-through.

@@ -173,6 +173,7 @@ namespace {
         int autoWindow = 6;          // v2.4: hold must die within this many ticks to auto-release
         bool autoReleased = false;   // v2.4: we released for you; your real release is swallowed
         int spamGap = 16;            // v2.5.2: inputs closer than this (ticks) count toward wave spam
+        bool waveMargin = true;      // v2.10: center wave saves in the safe window (1 tick of room)
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
@@ -298,6 +299,7 @@ namespace {
         buf.spamGap = static_cast<int>(mod->getSettingValue<int64_t>("wave-spam-gap"));
         buf.orbAlign = mod->getSettingValue<bool>("orb-align");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
+        buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin");
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
     }
 
@@ -941,29 +943,42 @@ namespace {
     // corridor, where you'd simply turn. So: if the run crashes, try turning back a bit
     // before the crash; if that turn survives, you had time to react and the run counts
     // as safe. Only crashes you couldn't have turned away from count as deaths.
-    constexpr int WAVE_TURN_MARGIN = 6;   // turn this many ticks before the crash
+    // v2.10: three turn points are tried (4, 8 and 12 ticks before the crash) instead of
+    // one, so "you could have turned away" is found whenever it's true.
+    constexpr int WAVE_TURN_MARGINS[] = { 4, 8, 12 };
     constexpr int WAVE_MIN_TURN = 6;      // a turn sooner than this after the input is too fast to count
     constexpr int WAVE_ESCAPE = 16;       // the turn must then survive this many ticks
 
-    int waveScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, SimEnd* end) {
-        int ret = simulateOrbs(layer, p1, p2, dual, delay, down, horizon, -1, horizon, end);
-        if (ret >= horizon || *end == SimEnd::StopSearch) {
+    // `target`: surviving this long is already good enough, so the run stops there and the
+    // turn-away checks are skipped (v2.10: saves most of the work in the search).
+    int waveScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int target,
+        SimEnd* end) {
+        int ret = simulateOrbs(layer, p1, p2, dual, delay, down, horizon, -1, target, end);
+        if (ret >= target || *end == SimEnd::StopSearch) {
             return ret;
         }
-        int turnAt = ret - WAVE_TURN_MARGIN;
-        if (turnAt < WAVE_MIN_TURN) {
-            return ret;
+        for (int margin : WAVE_TURN_MARGINS) {
+            int turnAt = ret - margin;
+            if (turnAt < WAVE_MIN_TURN) {
+                break;
+            }
+            int length = std::min(horizon, turnAt + WAVE_ESCAPE);
+            SimEnd turnEnd;
+            int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
+            if (turned >= length) {
+                return horizon;
+            }
         }
-        int length = std::min(horizon, turnAt + WAVE_ESCAPE);
-        SimEnd turnEnd;
-        int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
-        return turned >= length ? horizon : ret;
+        return ret;
     }
 
     // v2.7 wave search, same rules as the cube: the smallest delay that is safe (or
     // clearly better than now) wins, so turns are only held back as long as needed.
+    bool marginUsed = false;  // the last wave save took the +1 tick safety margin
+
     int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay, int base,
         int* landed) {
+        marginUsed = false;
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
         int target = std::min(horizon, base + 12);
@@ -971,7 +986,7 @@ namespace {
         dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
             SimEnd end;
-            int ret = waveScore(layer, p1, p2, dual, k, down, horizon, &end);
+            int ret = waveScore(layer, p1, p2, dual, k, down, horizon, target, &end);
             if (ret > dbgBestRet) {
                 dbgBestRet = ret;
                 dbgBestK = k;
@@ -981,6 +996,18 @@ namespace {
             }
             if (ret >= target) {
                 *landed = ret;
+                // v2.10 safety margin: the first safe delay is the one that only just clears
+                // the spike corner, so a pixel of difference in the real run can still clip
+                // it. If the next two delays are safe too, take the middle one: a tick of
+                // room on both sides.
+                if (buf.waveMargin && k + 2 <= maxDelay) {
+                    SimEnd e1, e2;
+                    if (waveScore(layer, p1, p2, dual, k + 1, down, horizon, target, &e1) >= target &&
+                        waveScore(layer, p1, p2, dual, k + 2, down, horizon, target, &e2) >= target) {
+                        marginUsed = true;
+                        return k + 1;
+                    }
+                }
                 return k;
             }
             if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
@@ -1204,7 +1231,7 @@ namespace {
         buf.trackMovers = buf.avoidMovers;
         SimEnd end;
         bool cubeStyleWave = anyWave && !buf.waveV46;
-        int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, &end)
+        int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.trackMovers = false;
         if (base >= horizon) {
@@ -1237,7 +1264,8 @@ namespace {
             return false;
         }
 
-        say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay);
+        say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay,
+            cubeStyleWave && marginUsed ? "  +margin" : "");
         startDrift(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
         buf.shift = saved;
         queueInput(saved, down);
@@ -1359,7 +1387,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.9.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.10 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1408,12 +1436,13 @@ class $modify(BufPlayLayer, PlayLayer) {
             art->setScale(std::max(W / size.width, H / size.height));
             art->setPosition({ W / 2.f, H / 2.f });
             art->setColor({ 40, 120, 255 });
+            art->setOpacity(150);
             clip->addChild(art);
         }
-        auto* shade = CCLayerGradient::create({ 0, 0, 0, 110 }, { 0, 0, 0, 215 }, { 0.f, -1.f });
+        auto* shade = CCLayerGradient::create({ 0, 0, 0, 50 }, { 0, 0, 0, 140 }, { 0.f, -1.f });
         shade->setContentSize({ W, H });
         clip->addChild(shade);
-        auto* header = CCLayerColor::create({ 0, 0, 0, 120 }, W, 28.f);
+        auto* header = CCLayerColor::create({ 0, 0, 0, 80 }, W, 28.f);
         header->setPosition({ 0.f, H - 28.f });
         clip->addChild(header);
         auto* rule = CCLayerColor::create({ 255, 255, 255, 45 }, W - 16.f, 1.f);
@@ -1424,6 +1453,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         if (auto* frame = CCScale9Sprite::create("GJ_square07.png")) {
             frame->setContentSize({ W, H });
             frame->setPosition({ W / 2.f, H / 2.f });
+            frame->setOpacity(190);
             buf.panel->addChild(frame);
         }
 

@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.9.1",
+	"version": "v2.10.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -132,6 +132,12 @@
 			"name": "Wave: old v4.6 logic",
 			"description": "Use the old v4.6 wave rules (big-gain bar, 1-tick queued opposite). Off = the cube-style wave: a crash you could still turn away from counts as safe, and the smallest delay that clears the obstacle wins.",
 			"default": false
+		},
+		"wave-safety-margin": {
+			"type": "bool",
+			"name": "Wave: safety margin",
+			"description": "When a wave save is found, use a delay with one tick of room on both sides instead of the one that only just clears the spike, so tiny differences in the real run can't clip it. Can add 1 tick (0.25f) to some saves.",
+			"default": true
 		}
 	}
 }
