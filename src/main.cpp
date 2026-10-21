@@ -213,6 +213,27 @@ namespace {
 
     std::string stageText();
 
+    // v2.23 unlocked FPS: GD runs round(max(1, frameTime * 240)) physics steps per frame,
+    // so only 60 / 120 / 240 FPS give 240 steps a second (144 FPS -> 288, 360 FPS -> 360).
+    // Every window in this mod was written in 240-per-second ticks, so at other frame rates
+    // it covered the wrong amount of time (at 360 FPS the cube's look-ahead ended before a
+    // jump could land, so every click looked like a death). `st()` converts a 240-tick
+    // amount into physics steps at the current rate. At 60 / 120 / 240 FPS it changes nothing.
+    float stepScale() {
+        float dt = buf.tickLength;
+        if (!(dt > 0.001f && dt < 2.f)) {
+            return 1.f;
+        }
+        return std::clamp(TICK / dt, 0.25f, 8.f);
+    }
+
+    int st(int ticks240) {
+        if (ticks240 <= 0) {
+            return ticks240;
+        }
+        return std::max(1, static_cast<int>(std::lround(ticks240 * stepScale())));
+    }
+
     // v2.4 moving-object guard: last known position of each object the ghost collided with.
     struct Watched {
         double x;
@@ -654,7 +675,7 @@ namespace {
     }
 
     int holdEstimate() {
-        return tapHold.pick(12, 50);  // ~50 ms, a typical tap
+        return tapHold.pick(st(12), 50);  // ~50 ms, a typical tap
     }
 
     // v2.4 moving-object guard: objects the ghost collided with are watched every tick,
@@ -662,7 +683,7 @@ namespace {
     // level frozen at the click, so it tests them in the wrong place).
     void watchObject(GameObject* object) {
         auto [it, added] = watched.try_emplace(object, Watched { object->m_positionX, object->m_positionY, -MOVER_TICKS });
-        if (!added && tickCount - it->second.movedTick < MOVER_TICKS) {
+        if (!added && tickCount - it->second.movedTick < st(MOVER_TICKS)) {
             buf.sawMover = true;
         }
     }
@@ -824,7 +845,7 @@ namespace {
         if (pending.delay > 0) {
             auto& spot = memory[pending.slice];
             ++spot.ok;
-            spot.delaySum += pending.delay;
+            spot.delaySum += static_cast<uint32_t>(std::lround(pending.delay / stepScale()));  // stored at 240/s
             memoryChanged();
         }
     }
@@ -835,14 +856,14 @@ namespace {
             return;
         }
         // A decision that lived long enough before the next one counts as having worked.
-        if (pending.active && tickCount - pending.tick >= 30) {
+        if (pending.active && tickCount - pending.tick >= st(30)) {
             creditPending();
         }
         pending = { true, sliceOf(p1), tickCount, delay };
     }
 
     void memoryTick() {
-        if (pending.active && tickCount - pending.tick >= OUTCOME_TICKS) {
+        if (pending.active && tickCount - pending.tick >= st(OUTCOME_TICKS)) {
             creditPending();
         }
     }
@@ -878,7 +899,7 @@ namespace {
         if (spot.ok < 2) {
             return 0;
         }
-        return static_cast<int>(std::lround(static_cast<double>(spot.delaySum) / spot.ok));
+        return st(static_cast<int>(std::lround(static_cast<double>(spot.delaySum) / spot.ok)));
     }
 
     bool memoryRisky(int slice) {
@@ -1082,16 +1103,16 @@ namespace {
             // into obstacles that need your next click. Now: standing on a surface for
             // SPIDER_LAND ticks after the input = the flip is done and safe.
             if (spiderRun) {
-                if (++groundTicks >= SPIDER_LAND) {
+                if (++groundTicks >= st(SPIDER_LAND)) {
                     safe = true;
                     break;
                 }
                 continue;
             }
-            if (airTicks < 6) {
+            if (airTicks < st(6)) {
                 continue;
             }
-            if (groundTicks > 2) {
+            if (groundTicks > st(2)) {
                 safe = true;
                 break;
             }
@@ -1213,14 +1234,14 @@ namespace {
     // Full wave look-ahead from the setting (mini = 15 less).
     int fullWaveHorizon(bool mini) {
         int wh = std::clamp(buf.waveHorizon, 20, 160);
-        return mini ? std::max(20, wh - 15) : wh;  // v4.6: 65 normal / 50 mini
+        return st(mini ? std::max(20, wh - 15) : wh);  // v4.6: 65 normal / 50 mini
     }
 
     // v2.6 orb alignment: a press made a little before reaching an orb would be wasted
     // (or jump off the ground instead). Find the delay that lands the press inside the
     // orb, like the cube buffer does for jumps. Returns that delay, or 0.
     int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int* landed) {
-        int window = std::clamp(buf.orbWindow, 1, 64);
+        int window = st(std::clamp(buf.orbWindow, 1, 64));
         int found = 0;
         SimEnd end;
         buf.orbClick = false;  // the press being tested is the orb click
@@ -1240,7 +1261,7 @@ namespace {
                 //    longest wins (earliest on a tie), instead of simply the first that hits
                 //    the orb: where in the orb you click changes where the orb sends you.
                 int bestRet = -1;
-                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + 6); ++k) {
+                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + st(6)); ++k) {
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
                     if (end == SimEnd::StopSearch) {
                         break;
@@ -1287,11 +1308,11 @@ namespace {
             return ret;
         }
         for (int margin : WAVE_TURN_MARGINS) {
-            int turnAt = ret - margin;
-            if (turnAt < WAVE_MIN_TURN) {
+            int turnAt = ret - st(margin);
+            if (turnAt < st(WAVE_MIN_TURN)) {
                 break;
             }
-            int length = std::min(horizon, turnAt + WAVE_ESCAPE);
+            int length = std::min(horizon, turnAt + st(WAVE_ESCAPE));
             SimEnd turnEnd;
             int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
             if (turned >= length) {
@@ -1311,21 +1332,21 @@ namespace {
     int robotUsedHold = -1;   // hold length that made the last robot run survive
 
     int robotScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int target, SimEnd* end) {
-        int usual = robotHold.pick(20, 50);
+        int usual = robotHold.pick(st(20), 50);
         int best = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, usual, target, end);
         robotUsedHold = usual;
         if (best >= target || *end == SimEnd::StopSearch) {
             return best;
         }
         for (int hold : ROBOT_HOLDS) {
-            if (std::abs(hold - usual) < 3) {
+            if (std::abs(st(hold) - usual) < st(3)) {
                 continue;
             }
             SimEnd e;
-            int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, hold, target, &e);
+            int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, st(hold), target, &e);
             if (ret > best) {
                 best = ret;
-                robotUsedHold = hold;
+                robotUsedHold = st(hold);
             }
             if (best >= target) {
                 break;
@@ -1346,11 +1367,11 @@ namespace {
             return ret;
         }
         for (int margin : SPIDER_RETAP) {
-            int at = ret - margin;
-            if (at < SPIDER_MIN_RETAP) {
+            int at = ret - st(margin);
+            if (at < st(SPIDER_MIN_RETAP)) {
                 break;
             }
-            int length = std::min(horizon, at + 16);
+            int length = std::min(horizon, at + st(16));
             buf.retapAt = at;
             SimEnd e;
             int retapped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
@@ -1366,7 +1387,7 @@ namespace {
     int searchSmallest(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score) {
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
-        int target = std::min(horizon, base + 12);
+        int target = std::min(horizon, base + st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
@@ -1398,7 +1419,7 @@ namespace {
         marginUsed = false;
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
-        int target = std::min(horizon, base + 12);
+        int target = std::min(horizon, base + st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
@@ -1444,7 +1465,7 @@ namespace {
             return std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs;
         };
 
-        int target = std::min(horizon, base + 12);
+        int target = std::min(horizon, base + st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
         int waveBestK = 0;
@@ -1558,7 +1579,7 @@ namespace {
         // with a buffered click never reached the streak and its taps got collapsed).
         // Once the streak is reached, anything still waiting is dropped and your inputs
         // go straight to the game until you pause for longer than the spam gap.
-        if (buf.sinceInput < std::clamp(buf.spamGap, 4, 40)) {
+        if (buf.sinceInput < st(std::clamp(buf.spamGap, 4, 40))) {
             ++buf.rapid;
         }
         else {
@@ -1618,11 +1639,11 @@ namespace {
         }
 
         bool anyFlyer = isFlying(p1) || (p2 && isFlying(p2));  // wave / ufo / swing
-        int horizon = anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240);
+        int horizon = st(anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240));
         if (anyWave) {
             horizon = fullWaveHorizon(mini);
         }
-        int maxDelay = anyWave ? buf.ticksWave : buf.ticksAll;
+        int maxDelay = st(anyWave ? buf.ticksWave : buf.ticksAll);
         if (maxDelay <= 0) {
             buf.appliedInput = down;
             return false;
@@ -1686,7 +1707,7 @@ namespace {
         // same gap gets the same save every time.
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
-            int target = std::min(horizon, base + 12);
+            int target = std::min(horizon, base + st(12));
             SimEnd e;
             int ret = cubeStyleWave ? waveScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
                     : robotPress    ? robotScore(layer, p1, p2, dual, learned, horizon, target, &e)
@@ -1785,7 +1806,7 @@ namespace {
         }
         bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
 
-        int window = std::clamp(buf.autoWindow, 2, 24);
+        int window = st(std::clamp(buf.autoWindow, 2, 24));
         buf.sawMover = false;
         buf.skipPress = true;
         buf.orbClick = buf.assumeOrbs;
@@ -1797,14 +1818,14 @@ namespace {
         }
 
         // v2.12 robot: letting go ends the jump boost; judged like a cube jump (landing = safe).
-        int horizon = wave ? fullWaveHorizon(mini) : std::clamp(buf.groundHorizon, 48, 240);
+        int horizon = wave ? fullWaveHorizon(mini) : st(std::clamp(buf.groundHorizon, 48, 240));
         if (dash && (p1->m_isDart || p1->m_isBird || p1->m_isSwing)) {
-            horizon = 48;
+            horizon = st(48);
         }
         buf.trackMovers = buf.avoidMovers;
         int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
         buf.trackMovers = false;
-        if (release < horizon && release < hold + 10) {
+        if (release < horizon && release < hold + st(10)) {
             return;
         }
         if (buf.avoidMovers && buf.sawMover) {
@@ -1878,7 +1899,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.22 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.23 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2113,9 +2134,12 @@ class $modify(BufPlayerObject, PlayerObject) {
 
         PlayerObject::update(dt);
 
-        // The ghost must step with exactly the dt the real player gets.
+        // The ghost must step with the dt the real player gets. v2.23: with unlocked FPS the
+        // step length jitters from frame to frame, so use a running average; a big jump
+        // (FPS cap or time warp changed) is taken over straight away.
         if (dt > 0.f) {
-            buf.tickLength = dt;
+            float avg = buf.tickLength;
+            buf.tickLength = (avg > 0.f && std::abs(dt - avg) < avg * 0.3f) ? avg * 0.9f + dt * 0.1f : dt;
         }
     }
 
