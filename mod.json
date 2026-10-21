@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.15.0",
+	"version": "v2.16.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -186,6 +186,12 @@
 			"name": "Spider: smart flips",
 			"description": "A spider flip counts as done once you stand on the new surface for 12 ticks, and a crash you could have avoided by flipping back counts as safe. Stops the spider from delaying flips because of obstacles that need your next click.",
 			"default": true
+		},
+		"dash-auto-release": {
+			"type": "bool",
+			"name": "Dash orb auto-release",
+			"description": "While you hold a dash, if holding longer would crash within the auto-release window and letting go survives, the mod lets go for you (your own release is then ignored). Practice mode only, unless 'Auto-release in normal runs' is on.",
+			"default": false
 		}
 	}
 }

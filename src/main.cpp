@@ -184,6 +184,9 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool dashAutoRelease = false;  // v2.16: let go of a dash for you when it would crash
+        bool autoDash = false;       // v2.16: the current auto-release ended a dash
+        std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
         int retapAt = -1;            // v2.15: ticks after the input at which the ghost taps again (-1 = never)
         bool robotSmart = true;      // v2.12: robot presses count as safe if some hold length survives
@@ -322,6 +325,7 @@ namespace {
         buf.learn = mod->getSettingValue<bool>("level-memory");
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
+        buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
@@ -348,7 +352,8 @@ namespace {
             return;
         }
         auto* layer = GameManager::get()->m_playLayer;
-        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease) && layer && !layer->m_isPracticeMode;
+        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease || buf.dashAutoRelease) && layer &&
+            !layer->m_isPracticeMode;
         buf.autoTag->setVisible(on);
     }
 
@@ -902,6 +907,7 @@ namespace {
         }
         buf.snapshots.clear();
         buf.simUsed.clear();
+        buf.orbsUsed.clear();
     }
 
     void advanceGhost(PlayerObject* ghost, float dt) {
@@ -1010,6 +1016,10 @@ namespace {
                         pressGhost(buf.ghost2, t == 1);
                     }
                 }
+            }
+            // v2.16: a dash lasts as long as you hold, so the ghost doesn't let go mid-dash.
+            if (down && releaseAfter >= 0 && tick == delay + releaseAfter && buf.ghost1->m_isDashing) {
+                ++releaseAfter;
             }
             if (releaseAfter >= 0 && tick == delay + releaseAfter) {
                 // let go of a press (or, for a wave release, press again: the turn back)
@@ -1217,17 +1227,26 @@ namespace {
             // 2. Pressing now already uses an orb (e.g. held into it): nothing to align.
             int now = simulate(layer, p1, p2, dual, 0, true, horizon, releaseAfter, horizon, &end);
             if (buf.orbUsedTick < 0) {
-                // 3. Earliest delay around the touch tick whose press really uses the orb,
-                //    and that doesn't crash sooner than missing the orb would.
-                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + 3); ++k) {
+                // 3. Every delay while you're inside the orb whose press really uses it and
+                //    doesn't crash sooner than missing it would. v2.16: the one that lives
+                //    longest wins (earliest on a tie), instead of simply the first that hits
+                //    the orb: where in the orb you click changes where the orb sends you.
+                int bestRet = -1;
+                for (int k = std::max(1, touch - 1); k <= std::min(window, touch + 6); ++k) {
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
                     if (end == SimEnd::StopSearch) {
                         break;
                     }
-                    if (buf.orbUsedTick >= 0 && ret >= std::min(now, horizon)) {
-                        *landed = ret;
+                    if (buf.orbUsedTick < 0 || ret < std::min(now, horizon)) {
+                        continue;
+                    }
+                    if (ret > bestRet) {
+                        bestRet = ret;
                         found = k;
-                        break;
+                        *landed = ret;
+                    }
+                    if (ret >= horizon) {
+                        break;  // fully safe: a later tick can't beat it
                     }
                 }
             }
@@ -1491,6 +1510,7 @@ namespace {
         if (buf.autoReleased) {
             // the game already let go for you: your real release has nothing left to do
             buf.autoReleased = false;
+            buf.autoDash = false;
             if (!down) {
                 return true;
             }
@@ -1573,7 +1593,9 @@ namespace {
                     robot = p2->m_isRobot;
                 }
             }
-            if (!wave2 && !down && !robot) {
+            // v2.16: letting go ends a dash, so dash releases are predicted like robot ones.
+            bool dashing = p1->m_isDashing || (p2 && p2->m_isDashing);
+            if (!wave2 && !down && !robot && !dashing) {
                 if (buf.releaseShift > 0) {
                     // the press was delayed, so its release is delayed by the same amount:
                     // the hold length the ghost was tested with is the one the game gets
@@ -1733,7 +1755,7 @@ namespace {
     // letting go now clearly survives longer, let go for you. Your own release later is
     // swallowed, and your next press works as normal.
     void tryAutoRelease(PlayLayer* layer, PlayerObject* p1) {
-        if ((!buf.autoRelease && !buf.robotAutoRelease) || buf.autoReleased || layer->m_isPlatformer) {
+        if ((!buf.autoRelease && !buf.robotAutoRelease && !buf.dashAutoRelease) || buf.autoReleased || layer->m_isPlatformer) {
             return;
         }
         if (!layer->m_isPracticeMode && !buf.autoNormalRuns) {
@@ -1747,9 +1769,10 @@ namespace {
         }
         bool dual = layer->m_gameState.m_isDualMode && layer->m_player2;
         auto* p2 = dual ? layer->m_player2 : nullptr;
-        bool wave = p1->m_isDart || (p2 && p2->m_isDart);
-        bool robot = !wave && (p1->m_isRobot || (p2 && p2->m_isRobot));
-        if (p1->m_isDead || !((wave && buf.autoRelease) || (robot && buf.robotAutoRelease))) {
+        bool dash = p1->m_isDashing || (p2 && p2->m_isDashing);
+        bool wave = !dash && (p1->m_isDart || (p2 && p2->m_isDart));
+        bool robot = !dash && !wave && (p1->m_isRobot || (p2 && p2->m_isRobot));
+        if (p1->m_isDead || !((dash && buf.dashAutoRelease) || (wave && buf.autoRelease) || (robot && buf.robotAutoRelease))) {
             return;
         }
         bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
@@ -1767,6 +1790,9 @@ namespace {
 
         // v2.12 robot: letting go ends the jump boost; judged like a cube jump (landing = safe).
         int horizon = wave ? fullWaveHorizon(mini) : std::clamp(buf.groundHorizon, 48, 240);
+        if (dash && (p1->m_isDart || p1->m_isBird || p1->m_isSwing)) {
+            horizon = 48;
+        }
         buf.trackMovers = buf.avoidMovers;
         int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
         buf.trackMovers = false;
@@ -1777,8 +1803,9 @@ namespace {
             return;
         }
         buf.autoReleased = true;
+        buf.autoDash = dash;
         sendButton(layer, false);
-        say("AUTO release{}: holding dies in {}t, letting go lives {}t", robot ? " (robot)" : "", hold, release);
+        say("AUTO release{}: holding dies in {}t, letting go lives {}t", dash ? " (dash)" : (robot ? " (robot)" : ""), hold, release);
     }
 
     void deliverPending(PlayLayer* layer, PlayerObject* player) {
@@ -1801,7 +1828,7 @@ namespace {
         }
         // Left wave / robot while auto-released: the game goes back to what you're really holding.
         bool autoMode = player->m_isDart || player->m_isRobot || (dual && (layer->m_player2->m_isDart || layer->m_player2->m_isRobot));
-        if (buf.autoReleased && !autoMode) {
+        if (buf.autoReleased && !buf.autoDash && !autoMode) {
             buf.autoReleased = false;
         }
 
@@ -1843,7 +1870,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.15 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.16 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2103,7 +2130,11 @@ class $modify(BufPlayerObject, PlayerObject) {
             if (!buf.smart || !isGhost(this)) {
                 return;
             }
+            if (buf.orbsUsed.contains(ring)) {
+                return;
+            }
             snapshotObject(ring);
+            buf.orbsUsed.insert(ring);
             if (buf.orbUsedTick < 0) {
                 buf.orbUsedTick = buf.simTick;
             }
@@ -2113,8 +2144,11 @@ class $modify(BufPlayerObject, PlayerObject) {
 
     // Dash orbs don't go through ringJump.
     void startDashing(DashRingObject* ring) {
-        if (buf.simulating && isGhost(this) && buf.orbUsedTick < 0) {
-            buf.orbUsedTick = buf.simTick;
+        if (buf.simulating && isGhost(this)) {
+            buf.orbsUsed.insert(ring);
+            if (buf.orbUsedTick < 0) {
+                buf.orbUsedTick = buf.simTick;
+            }
         }
         PlayerObject::startDashing(ring);
     }
@@ -2166,7 +2200,20 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     // state is snapshotted and restored afterwards so the real player is unaffected.
     bool canBeActivatedByPlayer(PlayerObject* player, EffectGameObject* object) {
         if (buf.simulating) {
-            if (!buf.smart || !isGhost(player) || !object || buf.simUsed.contains(object)) {
+            if (!buf.smart || !isGhost(player) || !object) {
+                return false;
+            }
+            // v2.16: an orb can be checked on every tick you're inside it. Before, the first
+            // check already "spent" it, so the ghost could only click an orb on the very
+            // first tick it touched it. Now an orb is only spent once the ghost used it.
+            if (typeinfo_cast<RingObject*>(object)) {
+                if (buf.orbsUsed.contains(object)) {
+                    return false;
+                }
+                snapshotObject(object);
+                return true;
+            }
+            if (buf.simUsed.contains(object)) {
                 return false;
             }
             snapshotObject(object);
