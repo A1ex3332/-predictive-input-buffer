@@ -1,4 +1,4 @@
-// Basu Input Buffer v2.9 (cube-style wave, wave auto-release, orb alignment, full ghost state, drift check, in-game console on `)
+// Basu Input Buffer v2.9 (cube-style wave, wave auto-release, orb alignment, full ghost state, drift check, in-game console on F9)
 //
 // When you click (or release, in wave / robot), a hidden "ghost" player is simulated
 // ahead with your input. If the ghost dies, the input is retried with 1..N ticks of
@@ -225,7 +225,7 @@ namespace {
         return { 255, 255, 255 };
     }
 
-    // In-game console (` key): current stage + the same live log the Windows console shows.
+    // In-game console (F9): current stage + the same live log the Windows console shows.
     // Hidden by default; only touched when open, so it costs nothing while closed.
     void refreshPanel() {
         if (!buf.panel) {
@@ -1359,7 +1359,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.9 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.9.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1391,7 +1391,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
 
-        // In-game console (` key): hidden unless the player opens it.
+        // In-game console (F9): hidden unless the player opens it.
         constexpr float W = PANEL_W;
         constexpr float H = PANEL_H;
         auto win = CCDirector::get()->getWinSize();
@@ -1456,7 +1456,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6  change stage      `  hide console", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6  change stage      F9  hide console", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -1616,7 +1616,7 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
             if (key == KEY_F6) {
                 cycleStage();
             }
-            else if (key == KEY_OEM3) {  // ` (backtick / tilde key)
+            else if (key == KEY_F9) {
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
             }

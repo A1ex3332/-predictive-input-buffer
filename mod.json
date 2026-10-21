@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.9.0",
+	"version": "v2.9.1",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -42,7 +42,7 @@
 		"debug-console": {
 			"type": "bool",
 			"name": "Debug console window",
-			"description": "Also open a separate Windows console with the same log as the in-game console (` key). Needs a restart.",
+			"description": "Also open a separate Windows console with the same log as the in-game console (F9). Needs a restart.",
 			"default": false
 		},
 		"ground-horizon": {
@@ -102,7 +102,7 @@
 		"drift-check": {
 			"type": "bool",
 			"name": "Drift check (debug)",
-			"description": "After each input, compare where the prediction said you'd go with where you actually went, and log the biggest gap in the in-game console (` key). Use it to see how precise the predictions are on a level.",
+			"description": "After each input, compare where the prediction said you'd go with where you actually went, and log the biggest gap in the in-game console (F9). Use it to see how precise the predictions are on a level.",
 			"default": false
 		},
 		"wave-spam-gap": {
