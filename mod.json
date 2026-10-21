@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.25.0",
+	"version": "v2.26.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -212,6 +212,12 @@
 			"default": 2,
 			"min": 0,
 			"max": 16
+		},
+		"orb-timing": {
+			"type": "bool",
+			"name": "Orb timing",
+			"description": "For orbs that only work at a specific moment inside them: a press already inside an orb that would crash is moved 1-6 ticks later in the orb if that survives, the orb timing that worked at a spot before is tried first, and predictions also try clicking later orbs 3 and 6 ticks into them.",
+			"default": true
 		}
 	}
 }

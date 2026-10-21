@@ -169,6 +169,10 @@ namespace {
         bool assumeOrbs = true;      // v2.2: the ghost clicks every orb it touches ("calculation mode")
         bool held1 = false, held2 = false;   // button state the ghosts are meant to be in
         bool auto1 = false, auto2 = false;   // an orb auto-click is currently held on this ghost
+        bool orbTiming = true;       // v2.26: orb clicks at specific timings inside the orb
+        int orbClickDelay = 0;       // v2.26: ghost orb auto-clicks wait this many ticks into the orb
+        int autoAt1 = -1, autoAt2 = -1;      // v2.26: tick a delayed orb auto-click fires (-1 none, -2 done)
+        bool orbWasTiming = false;   // v2.26: the last orb save re-timed a press that was already in the orb
 
         bool tryBothOrbs = true;     // v2.4: if a run touches an orb and dies, retry with the other orb choice
         bool orbClick = true;        // v2.4: orb choice of the current run
@@ -348,6 +352,7 @@ namespace {
         buf.driftCheck = mod->getSettingValue<bool>("drift-check");
         buf.spamGap = static_cast<int>(mod->getSettingValue<int64_t>("wave-spam-gap"));
         buf.orbAlign = mod->getSettingValue<bool>("orb-align");
+        buf.orbTiming = mod->getSettingValue<bool>("orb-timing");
         buf.orbAlignGround = mod->getSettingValue<bool>("orb-align-ground");
         buf.fullState = mod->getSettingValue<bool>("full-ghost-state");
         buf.learn = mod->getSettingValue<bool>("level-memory");
@@ -1014,6 +1019,7 @@ namespace {
         }
         buf.held1 = buf.held2 = buf.appliedInput;
         buf.auto1 = buf.auto2 = false;
+        buf.autoAt1 = buf.autoAt2 = -1;
 
         // v4.6 wave: before a delayed input fires, the ghost is in the opposite state
         // (holding before a delayed release, released before a delayed press).
@@ -1047,6 +1053,22 @@ namespace {
 
         for (; tick < total; ++tick) {
             buf.simTick = tick;
+            // v2.26: orb auto-clicks that wait a few ticks into the orb fire here, if the
+            // ghost is still inside an orb by then.
+            if (buf.autoAt1 >= 0 && tick >= buf.autoAt1) {
+                if (!buf.held1 && buf.ghost1->m_touchingRings->count() > 0) {
+                    buf.ghost1->pushButton(PlayerButton::Jump);
+                    buf.auto1 = true;
+                }
+                buf.autoAt1 = -2;
+            }
+            if (second && buf.autoAt2 >= 0 && tick >= buf.autoAt2) {
+                if (!buf.held2 && buf.ghost2->m_touchingRings->count() > 0) {
+                    buf.ghost2->pushButton(PlayerButton::Jump);
+                    buf.auto2 = true;
+                }
+                buf.autoAt2 = -2;
+            }
             if (tick == delay && !buf.skipPress) {
                 pressGhost(buf.ghost1, down);
                 if (second) {
@@ -1174,7 +1196,24 @@ namespace {
         if (firstEnd != SimEnd::StopSearch) {
             *end = SimEnd::Ok;
         }
-        return std::max(first, second);
+        int best = std::max(first, second);
+        // v2.26: some orbs only work when clicked at a specific moment inside them (levels
+        // like Orbit). The ghost's orb clicks are also tried 3 and 6 ticks into the orb.
+        if (buf.orbTiming && best < stopAt) {
+            for (int late : { 3, 6 }) {
+                buf.orbClick = true;
+                buf.orbClickDelay = st(late);
+                SimEnd lateEnd;
+                int ret = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, &lateEnd);
+                buf.orbClickDelay = 0;
+                buf.orbClick = buf.assumeOrbs;
+                best = std::max(best, ret);
+                if (best >= stopAt) {
+                    break;
+                }
+            }
+        }
+        return best;
     }
 
     // Ghost 1's position after every tick of one run (until it dies or is safe).
@@ -1264,11 +1303,22 @@ namespace {
     // v2.6 orb alignment: a press made a little before reaching an orb would be wasted
     // (or jump off the ground instead). Find the delay that lands the press inside the
     // orb, like the cube buffer does for jumps. Returns that delay, or 0.
-    int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int* landed) {
+    int alignOrb(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int releaseAfter, int learned, int* landed) {
         int window = st(std::clamp(buf.orbWindow, 1, 64));
         int found = 0;
         SimEnd end;
         buf.orbClick = false;  // the press being tested is the orb click
+        buf.orbWasTiming = false;
+
+        // v2.26: the orb timing that worked at this spot on earlier runs is tried first.
+        if (learned > 0 && learned <= window) {
+            int ret = simulate(layer, p1, p2, dual, learned, true, horizon, releaseAfter, horizon, &end);
+            if (buf.orbUsedTick >= 0 && ret >= horizon) {
+                *landed = ret;
+                buf.orbClick = buf.assumeOrbs;
+                return learned;
+            }
+        }
 
         // 1. Cheap probe: without pressing, does the ghost reach an orb soon?
         buf.skipPress = true;
@@ -1277,9 +1327,31 @@ namespace {
         int touch = buf.firstOrbTick;
 
         if (touch >= 0 && touch <= window) {
-            // 2. Pressing now already uses an orb (e.g. held into it): nothing to align.
+            // 2. Pressing now already uses an orb (e.g. held into it).
             int now = simulate(layer, p1, p2, dual, 0, true, horizon, releaseAfter, horizon, &end);
-            if (buf.orbUsedTick < 0) {
+            if (buf.orbUsedTick >= 0 && now < horizon && buf.orbTiming) {
+                // v2.26: ...but crashes. Where in the orb you click changes where it sends
+                // you, so try clicking 1 to 6 ticks later, still inside the orb; the run
+                // that lives longest (and clearly longer than now) wins.
+                int bestRet = -1;
+                for (int k = 1; k <= std::min(window, st(6)); ++k) {
+                    int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
+                    if (end == SimEnd::StopSearch) {
+                        break;
+                    }
+                    if (buf.orbUsedTick < 0 || ret < std::min(horizon, now + st(12)) || ret <= bestRet) {
+                        continue;
+                    }
+                    bestRet = ret;
+                    found = k;
+                    *landed = ret;
+                    buf.orbWasTiming = true;
+                    if (ret >= horizon) {
+                        break;
+                    }
+                }
+            }
+            else if (buf.orbUsedTick < 0) {
                 // 3. Every delay while you're inside the orb whose press really uses it and
                 //    doesn't crash sooner than missing it would. v2.16: the one that lives
                 //    longest wins (earliest on a tie), instead of simply the first that hits
@@ -1713,9 +1785,9 @@ namespace {
         bool grounded = p1->m_isOnGround && (!p2 || p2->m_isOnGround);
         if (down && !anyWave && !anyShip && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
             int orbLanded = 0;
-            int k = memorySaysSkip(sliceOf(p1)) ? 0 : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, &orbLanded);
+            int k = memorySaysSkip(sliceOf(p1)) ? 0 : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded);
             if (k > 0) {
-                say("ORB press +{}t ({:g}f) -> {}t", k, k * TICK, orbLanded);
+                say("ORB {} +{}t ({:g}f) -> {}t", buf.orbWasTiming ? "timing" : "press", k, k * TICK, orbLanded);
                 decided(layer, p1, p2, dual, k, down, horizon, releaseAfter);
                 buf.shift = k;
                 queueInput(k, down);
@@ -1957,7 +2029,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.25 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.26 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2490,7 +2562,13 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             bool first = player == buf.ghost1;
             bool& held = first ? buf.held1 : buf.held2;
             bool& autoClick = first ? buf.auto1 : buf.auto2;
-            if (!held && !autoClick) {
+            int& autoAt = first ? buf.autoAt1 : buf.autoAt2;
+            if (buf.orbClickDelay > 0) {
+                if (!held && autoAt == -1) {
+                    autoAt = buf.simTick + buf.orbClickDelay;  // v2.26: click later inside the orb
+                }
+            }
+            else if (!held && !autoClick) {
                 player->pushButton(PlayerButton::Jump);
                 autoClick = true;
             }
