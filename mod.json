@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.21.0",
+	"version": "v2.22.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -192,12 +192,6 @@
 			"name": "Dash orb auto-release",
 			"description": "While you hold a dash, if holding longer would crash within the auto-release window and letting go survives, the mod lets go for you (your own release is then ignored). Practice mode only, unless 'Auto-release in normal runs' is on.",
 			"default": false
-		},
-		"cbf-sync": {
-			"type": "bool",
-			"name": "Click Between Frames sync",
-			"description": "With the Click Between Frames mod, a click lands partway through a physics tick. The prediction then starts from that exact moment, and delayed inputs land on the tick the prediction tested. Has no effect without CBF.",
-			"default": true
 		},
 		"perf-log": {
 			"type": "bool",

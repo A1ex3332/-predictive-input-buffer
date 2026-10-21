@@ -187,11 +187,6 @@ namespace {
         bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
         int simRuns = 0;             // v2.21: predictions run for the current click
         long simTicks = 0;           // v2.21: ghost ticks stepped for the current click
-        bool cbfSync = true;         // v2.18: line the ghost up with Click Between Frames' mid-tick clicks
-        float firstStep = 1.f;       // v2.18: fraction of a tick the ghost's first step lasts
-        bool inRealUpdate = false;   // v2.18: inside P1's physics step (a CBF click lands here)
-        float tickStartX = 0.f;      // v2.18: P1's x at the start of the current tick
-        float tickDx = 0.f;          // v2.18: how far P1 moved in the last full tick
         bool dashAutoRelease = false;  // v2.16: let go of a dash for you when it would crash
         bool autoDash = false;       // v2.16: the current auto-release ended a dash
         std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
@@ -252,7 +247,7 @@ namespace {
         if (starts("skip") || starts("prediction budget")) return { 255, 180, 80 };
         if (starts("drift")) return { 255, 240, 150 };
         if (starts("perf")) return { 150, 200, 255 };
-        if (starts("F6") || starts("v2") || starts("path") || starts("Click")) return { 255, 215, 90 };
+        if (starts("F6") || starts("v2") || starts("path")) return { 255, 215, 90 };
         if (starts("memory")) return { 255, 150, 220 };
         return { 255, 255, 255 };
     }
@@ -335,7 +330,6 @@ namespace {
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
-        buf.cbfSync = mod->getSettingValue<bool>("cbf-sync");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
@@ -501,8 +495,6 @@ namespace {
         ghost->m_enable22Changes = real->m_enable22Changes;
         ghost->m_enableImpulseFix = real->m_enableImpulseFix;
         ghost->m_totalTime = real->m_totalTime;
-
-        ghost->m_lastPosition = real->m_lastPosition;  // v2.18: spider / move triggers read it (CBF sets it per tick)
 
         // vertical motion
         ghost->m_yVelocity = real->m_yVelocity;
@@ -1042,13 +1034,9 @@ namespace {
                 }
             }
 
-            // v2.18: with CBF the click lands partway through a tick, so the ghost's first
-            // step is only the rest of that tick; after it, ghost and game are on the same
-            // tick boundaries again.
-            float stepDt = tick == 0 ? dt * buf.firstStep : dt;
-            advanceGhost(buf.ghost1, stepDt);
+            advanceGhost(buf.ghost1, dt);
             if (second) {
-                advanceGhost(buf.ghost2, stepDt);
+                advanceGhost(buf.ghost2, dt);
             }
             releaseAutoClicks();
             if (buf.ghostDied) {
@@ -1056,9 +1044,9 @@ namespace {
                 break;
             }
 
-            checkGhost(layer, buf.ghost1, stepDt);
+            checkGhost(layer, buf.ghost1, dt);
             if (!buf.ghostDied && second) {
-                checkGhost(layer, buf.ghost2, stepDt);
+                checkGhost(layer, buf.ghost2, dt);
             }
             if (buf.ghostDied) {
                 died = true;
@@ -1551,24 +1539,6 @@ namespace {
 
         auto* p1 = self->m_player1;
         auto* p2 = dual ? layer->m_player2 : nullptr;
-
-        // v2.18 Click Between Frames: a click that arrives in the middle of P1's physics step
-        // landed `midTick` of the way through the tick (measured from how far P1 has moved
-        // since the tick started). The ghost then starts with the rest of that tick, and
-        // delayed inputs are queued one tick sooner, because the game's next tick boundary
-        // is already the ghost's tick 1.
-        float midTick = 0.f;
-        if (buf.cbfSync && buf.inRealUpdate && p1 && std::abs(buf.tickDx) > 0.01f) {
-            midTick = std::clamp((p1->m_position.x - buf.tickStartX) / buf.tickDx, 0.f, 0.999f);
-        }
-        buf.firstStep = 1.f - midTick;
-        struct FirstStepReset {
-            ~FirstStepReset() {
-                buf.firstStep = 1.f;
-            }
-        } firstStepReset;
-        int early = midTick > 0.f ? 1 : 0;
-
         if (!p1 || p1->m_isDead || p1->m_isShip || (p2 && p2->m_isShip)) {
             resetPending();
             buf.appliedInput = down;
@@ -1617,7 +1587,7 @@ namespace {
         // rhythm (tap length, hold length, follow-up clicks) is preserved.
         if (!buf.queue.empty()) {
             int after = buf.queue.back().ticksLeft;
-            queueInput(std::max(buf.shift - early, after), down);
+            queueInput(std::max(buf.shift, after), down);
             return true;
         }
 
@@ -1676,7 +1646,7 @@ namespace {
                 say("ORB press +{}t ({:g}f) -> {}t", k, k * TICK, orbLanded);
                 decided(layer, p1, p2, dual, k, down, horizon, releaseAfter);
                 buf.shift = k;
-                queueInput(k - early, down);
+                queueInput(k, down);
                 return true;
             }
         }
@@ -1768,7 +1738,7 @@ namespace {
             : robotPress ? fmt::format("  hold {}t", robotUsedHold) : std::string());
         decided(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
         buf.shift = saved;
-        queueInput(saved - early, down);
+        queueInput(saved, down);
         return true;
     }
 
@@ -1908,10 +1878,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
-        say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
-    }
-    say("v2.21 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.22 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2123,9 +2090,6 @@ class $modify(BufGameObject, GameObject) {
 class $modify(BufPlayerObject, PlayerObject) {
     static void onModify(auto& self) {
         (void)self.setHookPriority("PlayerObject::playSpiderDashEffect", HOOK_PRIORITY);
-        // v2.18: run before Click Between Frames, so this sees each physics tick once, with
-        // its full dt, and CBF's mid-tick clicks arrive while inRealUpdate is set.
-        (void)self.setHookPriority("PlayerObject::update", HOOK_PRIORITY);
         (void)self.setHookPriority("PlayerObject::incrementJumps", HOOK_PRIORITY);
         (void)self.setHookPriority("PlayerObject::ringJump", HOOK_PRIORITY);
     }
@@ -2147,23 +2111,11 @@ class $modify(BufPlayerObject, PlayerObject) {
             }
         }
 
-        bool isP1 = layer && this == layer->m_player1;
-        if (isP1) {
-            buf.tickStartX = m_position.x;
-            buf.inRealUpdate = true;
-        }
         PlayerObject::update(dt);
-        if (isP1) {
-            buf.inRealUpdate = false;
-            float dx = m_position.x - buf.tickStartX;
-            if (std::abs(dx) > 0.01f) {
-                buf.tickDx = dx;
-            }
-            // The ghost must step with exactly the dt the real player gets. (P1 only: with
-            // CBF, P2 can be stepped in pieces of a tick.)
-            if (dt > 0.f) {
-                buf.tickLength = dt;
-            }
+
+        // The ghost must step with exactly the dt the real player gets.
+        if (dt > 0.f) {
+            buf.tickLength = dt;
         }
     }
 

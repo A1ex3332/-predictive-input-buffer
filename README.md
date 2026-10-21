@@ -27,4 +27,3 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.13 level memory: learns per spot from your runs (delays that worked are tried first, spots where saves failed are left alone, risky spots marked in the path view).
 - v2.15 spider: flips are judged by landing on the new surface, and crashes you could flip away from count as safe.
 - v2.16 orbs: orbs usable on any tick inside them in predictions, orb alignment picks the best tick inside the orb, dash orbs held through in predictions, dash releases buffered, dash auto-release.
-- v2.18 Click Between Frames: predictions start at the exact mid-tick moment of a CBF click, delayed inputs line up with the tested tick, and the buffer's physics hook runs before CBF's.
