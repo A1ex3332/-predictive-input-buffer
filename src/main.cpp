@@ -184,6 +184,8 @@ namespace {
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
         bool robotSmart = true;      // v2.12: robot presses count as safe if some hold length survives
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
+        bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
+        CCLabelBMFont* autoTag = nullptr;  // v2.14: on-screen "AUTO-RELEASE ON" tag
         bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
@@ -316,6 +318,7 @@ namespace {
         buf.learn = mod->getSettingValue<bool>("level-memory");
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
+        buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
         buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin");
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
@@ -332,6 +335,16 @@ namespace {
             buf.ticksAll = s.ticksAll;
             buf.ticksWave = s.ticksWave;
         }
+    }
+
+    // v2.14: a run outside practice where auto-release can press for you is marked on screen.
+    void refreshAutoTag() {
+        if (!buf.autoTag) {
+            return;
+        }
+        auto* layer = GameManager::get()->m_playLayer;
+        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease) && layer && !layer->m_isPracticeMode;
+        buf.autoTag->setVisible(on);
     }
 
     std::string stageText() {
@@ -360,6 +373,7 @@ namespace {
         buf.panelTitle = nullptr;
         buf.panelLines.clear();
         buf.pathNode = nullptr;
+        buf.autoTag = nullptr;
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
@@ -1646,6 +1660,7 @@ namespace {
         applyStage();
         readSettings();
         say("F6 -> {}", stageText());
+        refreshAutoTag();
         refreshPanel();
     }
 
@@ -1654,7 +1669,10 @@ namespace {
     // letting go now clearly survives longer, let go for you. Your own release later is
     // swallowed, and your next press works as normal.
     void tryAutoRelease(PlayLayer* layer, PlayerObject* p1) {
-        if ((!buf.autoRelease && !buf.robotAutoRelease) || buf.autoReleased || !layer->m_isPracticeMode || layer->m_isPlatformer) {
+        if ((!buf.autoRelease && !buf.robotAutoRelease) || buf.autoReleased || layer->m_isPlatformer) {
+            return;
+        }
+        if (!layer->m_isPracticeMode && !buf.autoNormalRuns) {
             return;
         }
         if (!buf.queue.empty() || !buf.realInput || !buf.appliedInput || !buf.isPlayer1 || !buf.ghost1) {
@@ -1761,7 +1779,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.13 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.14 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1873,6 +1891,16 @@ class $modify(BufPlayLayer, PlayLayer) {
         this->addChild(buf.panel);
         refreshPanel();
 
+        buf.autoTag = CCLabelBMFont::create("AUTO-RELEASE ON", "bigFont.fnt");
+        buf.autoTag->setScale(0.3f);
+        buf.autoTag->setColor({ 255, 120, 120 });
+        buf.autoTag->setOpacity(200);
+        buf.autoTag->setAnchorPoint({ 1.f, 0.f });
+        buf.autoTag->setPosition({ win.width - 6.f, 4.f });
+        buf.autoTag->setZOrder(1000);
+        this->addChild(buf.autoTag);
+        refreshAutoTag();
+
         // Path view lives in the object layer, so it scrolls with the level.
         buf.pathNode = CCDrawNode::create();
         m_objectLayer->addChild(buf.pathNode, 9999);
@@ -1896,6 +1924,7 @@ class $modify(BufPlayLayer, PlayLayer) {
     void resetLevel() {
         resetPending();
         forgetPress();
+        refreshAutoTag();
         if (buf.pathNode) {
             buf.pathNode->clear();
         }
