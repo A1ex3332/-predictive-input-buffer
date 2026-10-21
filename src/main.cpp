@@ -2072,9 +2072,9 @@ class $modify(BufPlayLayer, PlayLayer) {
         refreshPanel();
 
         buf.autoTag = CCLabelBMFont::create("AUTO INPUTS ON", "bigFont.fnt");
-        buf.autoTag->setScale(0.3f);
+        buf.autoTag->setScale(0.24f);
         buf.autoTag->setColor({ 255, 120, 120 });
-        buf.autoTag->setOpacity(200);
+        buf.autoTag->setOpacity(153);  // 60%, like the console; still readable in a recording
         buf.autoTag->setAnchorPoint({ 1.f, 0.f });
         buf.autoTag->setPosition({ win.width - 6.f, 4.f });
         buf.autoTag->setZOrder(1000);
