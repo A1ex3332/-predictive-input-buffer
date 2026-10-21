@@ -176,6 +176,8 @@ namespace {
         bool waveMargin = true;      // v2.10: center wave saves in the safe window (1 tick of room)
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
+        bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
         int simTick = 0;             // v2.6: tick of the current run
         int firstOrbTick = -1;       // v2.6: first tick the current run touched an orb
@@ -300,6 +302,8 @@ namespace {
         buf.driftCheck = mod->getSettingValue<bool>("drift-check");
         buf.spamGap = static_cast<int>(mod->getSettingValue<int64_t>("wave-spam-gap"));
         buf.orbAlign = mod->getSettingValue<bool>("orb-align");
+        buf.orbAlignGround = mod->getSettingValue<bool>("orb-align-ground");
+        buf.fullState = mod->getSettingValue<bool>("full-ghost-state");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
         buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin");
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
@@ -421,6 +425,9 @@ namespace {
         ghost->m_touchedRing = real->m_touchedRing;
         ghost->m_touchedPad = real->m_touchedPad;
         ghost->m_touchedGravityPortal = real->m_touchedGravityPortal;
+        if (!buf.fullState) {
+            return;
+        }
 
         // v2.8: everything else the physics step reads, so every mode matches the real
         // player: cube / ball / ufo / wave / robot / spider / swing, mini, upside down,
@@ -1272,7 +1279,9 @@ namespace {
             releaseAfter = anyRobot ? robotHold.pick(-1, 50) : holdEstimate();
         }
 
-        if (down && !anyWave && buf.orbAlign && buf.smart) {
+        // On the ground a press is a jump; only move it onto an orb if the setting says so.
+        bool grounded = p1->m_isOnGround && (!p2 || p2->m_isOnGround);
+        if (down && !anyWave && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
             int orbLanded = 0;
             int k = alignOrb(layer, p1, p2, dual, horizon, releaseAfter, &orbLanded);
             if (k > 0) {
@@ -1452,7 +1461,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.11 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.11.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

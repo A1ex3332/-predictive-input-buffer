@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.11.0",
+	"version": "v2.11.1",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -144,6 +144,18 @@
 			"name": "Path view on at start",
 			"description": "Draw the predicted path in the level after each input (toggle any time with F10). Red = what the input would do right now, green = what the game actually gets, white dot = where a delayed input fires, red dot = crash. Costs two extra predictions per click while on.",
 			"default": false
+		},
+		"orb-align-ground": {
+			"type": "bool",
+			"name": "Orb alignment: also from the ground",
+			"description": "Off: presses made while standing on the ground are normal jumps and never get moved onto an orb. On: a ground jump made just before an orb can be turned into an orb hit.",
+			"default": false
+		},
+		"full-ghost-state": {
+			"type": "bool",
+			"name": "Full ghost state (v2.8)",
+			"description": "Copy the full player state (slopes, timers, forces, dash...) into the prediction ghost. Turn off to go back to the v2.7 ghost if predictions feel worse.",
+			"default": true
 		}
 	}
 }
