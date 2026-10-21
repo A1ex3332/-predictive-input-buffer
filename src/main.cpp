@@ -165,6 +165,7 @@ namespace {
         bool skipPress = false;      // v2.4: run without pressing anything (auto-release hold check)
         bool avoidMovers = true;     // v2.4: don't buffer when the ghost's path has moving objects
         bool sawMover = false;       // v2.4: a run this decision touched a moving object
+        bool trackMovers = false;    // v2.5.1: watch objects only in this run (not in every search run)
         bool autoRelease = false;    // v2.4: wave auto-release (practice mode only)
         int autoWindow = 6;          // v2.4: hold must die within this many ticks to auto-release
         bool autoReleased = false;   // v2.4: we released for you; your real release is swallowed
@@ -940,8 +941,10 @@ namespace {
         }
 
         buf.sawMover = false;
+        buf.trackMovers = buf.avoidMovers;
         SimEnd end;
         int base = simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
+        buf.trackMovers = false;
         if (base >= horizon) {
             startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
@@ -956,6 +959,13 @@ namespace {
             startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
+        }
+        if (buf.avoidMovers) {
+            // One extra run of the chosen delay with the moving-object watch on. (Watching
+            // in every search run made cube searches hit the time budget.)
+            buf.trackMovers = true;
+            simulateOrbs(layer, p1, p2, dual, saved, down, horizon, releaseAfter, horizon, &end);
+            buf.trackMovers = false;
         }
         if (buf.avoidMovers && buf.sawMover) {
             say("skip +{}t save: moving objects ahead", saved);
@@ -1013,7 +1023,9 @@ namespace {
         }
 
         int horizon = fullWaveHorizon(mini);
+        buf.trackMovers = buf.avoidMovers;
         int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
+        buf.trackMovers = false;
         if (release < horizon && release < hold + 10) {
             return;
         }
@@ -1084,7 +1096,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.5 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.5.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1340,7 +1352,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             uint64_t bit = type < 64 ? (1ull << type) : 0;
             if (keep & bit) {
                 relevant.push_back(object);
-                if (buf.avoidMovers && (COLLIDING_TYPES & bit)) {
+                if (buf.trackMovers && (COLLIDING_TYPES & bit)) {
                     watchObject(object);
                 }
                 continue;
