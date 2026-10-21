@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.2.0",
+	"version": "v2.3.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -62,8 +62,8 @@
 		"wave-horizon": {
 			"type": "int",
 			"name": "Wave lookahead (ticks)",
-			"description": "How far ahead the wave prediction looks (mini wave uses 3/4 of it). The old value was 38. Longer sees crashes further away but costs more time per click.",
-			"default": 64,
+			"description": "How far ahead the wave prediction looks (mini wave uses 15 ticks less). 65 = 65 normal / 50 mini. Longer sees crashes further away but costs more time per click.",
+			"default": 65,
 			"min": 20,
 			"max": 160
 		},
