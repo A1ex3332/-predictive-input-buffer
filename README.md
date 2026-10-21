@@ -10,7 +10,7 @@
 Install the Geode CLI and SDK, then run:  geode build
 
 ## Keys
-F6 cycle stage | F9 open/close the in-game console
+F6 cycle stage | F9 open/close the in-game console | F10 path view
 
 Edit "yourname" in mod.json first. Practice use only; do not use for verified or leaderboard runs.
 

@@ -182,6 +182,8 @@ namespace {
         int orbUsedTick = -1;        // v2.6: first tick the current run actually used an orb
         bool driftCheck = false;     // v2.4: log how far the real player strays from the prediction
         std::vector<CCPoint>* recordPath = nullptr;  // v2.4: ghost1 positions of the current run
+        bool showPath = false;       // v2.11: draw the predicted path (F10)
+        CCDrawNode* pathNode = nullptr;  // v2.11: owned by the level's object layer
 
         std::unordered_set<GameObject*> simUsed;
         std::vector<ObjSnapshot> snapshots;
@@ -222,7 +224,7 @@ namespace {
         if (starts("no save")) return { 175, 175, 190 };
         if (starts("skip") || starts("prediction budget")) return { 255, 180, 80 };
         if (starts("drift")) return { 255, 240, 150 };
-        if (starts("F6") || starts("v2")) return { 255, 215, 90 };
+        if (starts("F6") || starts("v2") || starts("path")) return { 255, 215, 90 };
         return { 255, 255, 255 };
     }
 
@@ -341,6 +343,7 @@ namespace {
         buf.panel = nullptr;
         buf.panelTitle = nullptr;
         buf.panelLines.clear();
+        buf.pathNode = nullptr;
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
@@ -876,23 +879,70 @@ namespace {
         return std::max(first, second);
     }
 
+    // Ghost 1's position after every tick of one run (until it dies or is safe).
+    std::vector<CCPoint> recordRun(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon,
+        int releaseAfter, bool* died = nullptr) {
+        std::vector<CCPoint> path;
+        buf.recordPath = &path;
+        buf.orbClick = buf.assumeOrbs;
+        SimEnd end;
+        simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, delay + horizon, &end);
+        buf.recordPath = nullptr;
+        if (died) {
+            *died = buf.ghostDied;
+        }
+        return path;
+    }
+
+    // v2.11 path view (F10): red = what your input would have done right now, green = what
+    // the game actually gets. A dot marks where a delayed input fires, a red dot a crash.
+    void drawPath(std::vector<CCPoint> const& path, int delay, ccColor4F color, bool died) {
+        for (size_t i = 1; i < path.size(); ++i) {
+            buf.pathNode->drawSegment(path[i - 1], path[i], 1.2f, color);
+        }
+        if (delay > 0 && delay <= static_cast<int>(path.size())) {
+            buf.pathNode->drawDot(path[delay - 1], 3.f, { 1.f, 1.f, 1.f, 0.9f });
+        }
+        if (died && !path.empty()) {
+            buf.pathNode->drawDot(path.back(), 4.f, { 1.f, 0.2f, 0.2f, 1.f });
+        }
+    }
+
+    void showPaths(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int chosen, bool down, int horizon, int releaseAfter) {
+        if (!buf.showPath || !buf.pathNode) {
+            return;
+        }
+        buf.pathNode->clear();
+        bool nowDied = false;
+        auto now = recordRun(layer, p1, p2, dual, 0, down, horizon, releaseAfter, &nowDied);
+        ccColor4F red { 1.f, 0.3f, 0.3f, 0.85f };
+        ccColor4F green { 0.3f, 1.f, 0.5f, 0.9f };
+        drawPath(now, 0, chosen > 0 ? red : (nowDied ? red : green), nowDied);
+        if (chosen > 0) {
+            bool died = false;
+            auto delayed = recordRun(layer, p1, p2, dual, chosen, down, horizon, releaseAfter, &died);
+            drawPath(delayed, chosen, green, died);
+        }
+    }
+
     // v2.4: record the ghost run for the input that was actually made (drift check).
     void startDrift(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter) {
         finishDrift("");
         if (!buf.driftCheck) {
             return;
         }
-        drift.path.clear();
-        buf.recordPath = &drift.path;
-        buf.orbClick = buf.assumeOrbs;
-        SimEnd end;
-        simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, delay + horizon, &end);
-        buf.recordPath = nullptr;
+        drift.path = recordRun(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
         drift.active = !drift.path.empty();
         drift.index = -1;
         drift.compared = 0;
         drift.maxErr = 0.f;
         drift.maxAt = 0;
+    }
+
+    // After every buffer decision: drift check + path view for the input the game gets.
+    void decided(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter) {
+        startDrift(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
+        showPaths(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
     }
 
     // Full wave look-ahead from the setting (mini = 15 less).
@@ -1227,7 +1277,7 @@ namespace {
             int k = alignOrb(layer, p1, p2, dual, horizon, releaseAfter, &orbLanded);
             if (k > 0) {
                 say("ORB press +{}t ({:g}f) -> {}t", k, k * TICK, orbLanded);
-                startDrift(layer, p1, p2, dual, k, down, horizon, releaseAfter);
+                decided(layer, p1, p2, dual, k, down, horizon, releaseAfter);
                 buf.shift = k;
                 queueInput(k, down);
                 return true;
@@ -1242,7 +1292,7 @@ namespace {
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.trackMovers = false;
         if (base >= horizon) {
-            startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
         }
@@ -1253,7 +1303,7 @@ namespace {
         if (saved <= 0) {
             say("no save: {} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", base, maxDelay,
                 dbgBestK, dbgBestRet, horizon);
-            startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
         }
@@ -1266,14 +1316,14 @@ namespace {
         }
         if (buf.avoidMovers && buf.sawMover) {
             say("skip +{}t save: moving objects ahead", saved);
-            startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
         }
 
         say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay,
             cubeStyleWave && marginUsed ? "  +margin" : "");
-        startDrift(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
+        decided(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
         buf.shift = saved;
         queueInput(saved, down);
         return true;
@@ -1393,6 +1443,7 @@ namespace {
 
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
+    buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
     readSettings();
     applyStage();
     if (buf.console) {
@@ -1401,7 +1452,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.10.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.11 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1501,7 +1552,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6  change stage      F9  hide console", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6  stage      F9  hide console      F10  path view", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -1510,6 +1561,10 @@ class $modify(BufPlayLayer, PlayLayer) {
 
         this->addChild(buf.panel);
         refreshPanel();
+
+        // Path view lives in the object layer, so it scrolls with the level.
+        buf.pathNode = CCDrawNode::create();
+        m_objectLayer->addChild(buf.pathNode, 9999);
 
         buf.realInput = false;
         buf.appliedInput = false;
@@ -1528,6 +1583,9 @@ class $modify(BufPlayLayer, PlayLayer) {
     void resetLevel() {
         resetPending();
         forgetPress();
+        if (buf.pathNode) {
+            buf.pathNode->clear();
+        }
         buf.autoReleased = false;
         drift.active = false;
         PlayLayer::resetLevel();
@@ -1666,6 +1724,13 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
             else if (key == KEY_F9) {
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
+            }
+            else if (key == KEY_F10) {
+                buf.showPath = !buf.showPath;
+                if (buf.pathNode) {
+                    buf.pathNode->clear();
+                }
+                say("path view {}", buf.showPath ? "on" : "off");
             }
         }
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, isKeyDown, isKeyRepeat, timestamp);
