@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.5.1",
+	"version": "v2.5.2",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -104,6 +104,14 @@
 			"name": "Drift check (debug)",
 			"description": "After each input, compare where the prediction said you'd go with where you actually went, and log the biggest gap in the K panel. Use it to see how precise the predictions are on a level.",
 			"default": false
+		},
+		"wave-spam-gap": {
+			"type": "int",
+			"name": "Wave spam: max gap (ticks)",
+			"description": "Presses/releases closer together than this count as spam. After 3 in a row, wave inputs go straight to the game until you pause. 16 ticks = 4 frames at 60fps (about 7 clicks/sec). Raise it if spam still gets buffered, lower it if tight wave parts stop being buffered.",
+			"default": 16,
+			"min": 4,
+			"max": 40
 		}
 	}
 }

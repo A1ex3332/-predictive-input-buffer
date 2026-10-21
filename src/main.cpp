@@ -40,6 +40,7 @@ namespace {
     constexpr int HOOK_PRIORITY = -1000000;
     constexpr float TICK = 0.25f;
     constexpr size_t PANEL_LINES = 8;
+    constexpr int SPAM_STREAK = 3;  // this many fast inputs in a row = wave spam
 
     constexpr uint64_t typeBit(GameObjectType type) {
         return 1ull << static_cast<int>(type);
@@ -169,6 +170,7 @@ namespace {
         bool autoRelease = false;    // v2.4: wave auto-release (practice mode only)
         int autoWindow = 6;          // v2.4: hold must die within this many ticks to auto-release
         bool autoReleased = false;   // v2.4: we released for you; your real release is swallowed
+        int spamGap = 16;            // v2.5.2: inputs closer than this (ticks) count toward wave spam
         bool driftCheck = false;     // v2.4: log how far the real player strays from the prediction
         std::vector<CCPoint>* recordPath = nullptr;  // v2.4: ghost1 positions of the current run
 
@@ -259,6 +261,7 @@ namespace {
         buf.autoRelease = mod->getSettingValue<bool>("wave-auto-release");
         buf.autoWindow = static_cast<int>(mod->getSettingValue<int64_t>("auto-release-window"));
         buf.driftCheck = mod->getSettingValue<bool>("drift-check");
+        buf.spamGap = static_cast<int>(mod->getSettingValue<int64_t>("wave-spam-gap"));
     }
 
     void applyStage() {
@@ -857,15 +860,36 @@ namespace {
             buf.releaseShift = 0;
         }
 
+        bool p1Wave = p1->m_isDart;
+        bool anyWave = p1Wave || (p2 && p2->m_isDart);
+        bool mini = (p1Wave && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
+
+        // Wave spam: don't fight fast inputs. Counted for every input, including ones made
+        // while a delayed input is waiting (v2.5.1 skipped those, so a spam that started
+        // with a buffered click never reached the streak and its taps got collapsed).
+        // Once the streak is reached, anything still waiting is dropped and your inputs
+        // go straight to the game until you pause for longer than the spam gap.
+        if (buf.sinceInput < std::clamp(buf.spamGap, 4, 40)) {
+            ++buf.rapid;
+        }
+        else {
+            buf.rapid = 0;
+        }
+        buf.sinceInput = 0;
+        if (anyWave && buf.rapid >= SPAM_STREAK) {
+            resetPending();
+            buf.appliedInput = down;
+            return false;
+        }
+
         // v4.6 wave: while a delayed input waits, a quick opposite input fires one tick
         // after it; pressing the same way again cancels that.
-        if (!buf.queue.empty() && p1 && (p1->m_isDart || (p2 && p2->m_isDart))) {
+        if (!buf.queue.empty() && anyWave) {
             auto first = buf.queue.front();
             buf.queue.erase(buf.queue.begin() + 1, buf.queue.end());
             if (down != first.down) {
                 queueInput(first.ticksLeft + 1, down);
             }
-            buf.sinceInput = 0;
             return true;
         }
 
@@ -874,26 +898,7 @@ namespace {
         if (!buf.queue.empty()) {
             int after = buf.queue.back().ticksLeft;
             queueInput(std::max(buf.shift, after), down);
-            buf.sinceInput = 0;
             return true;
-        }
-
-        bool p1Wave = p1->m_isDart;
-        bool anyWave = p1Wave || (p2 && p2->m_isDart);
-        bool mini = (p1Wave && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
-
-        // Wave spam: don't fight fast inputs.
-        if (buf.sinceInput < 8) {
-            int before = buf.rapid++;
-            buf.sinceInput = 0;
-            if (before >= 2 && anyWave) {
-                buf.appliedInput = down;
-                return false;
-            }
-        }
-        else {
-            buf.sinceInput = 0;
-            buf.rapid = 0;
         }
 
         // Releases only matter for wave and robot.
@@ -1096,7 +1101,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.5.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.5.2 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
