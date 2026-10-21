@@ -184,6 +184,11 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool autoSave = false;       // v2.17: click for you when doing nothing would crash
+        int autoSaveWindow = 8;      // v2.17: ...within this many ticks
+        bool guardActive = false;    // v2.17: auto-save clicked; your late click is swallowed
+        int guardTick = 0;           // v2.17: when it clicked
+        bool guardHold = false;      // v2.17: auto-save is holding (wave) until your next input
         bool dashAutoRelease = false;  // v2.16: let go of a dash for you when it would crash
         bool autoDash = false;       // v2.16: the current auto-release ended a dash
         std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
@@ -326,6 +331,8 @@ namespace {
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
+        buf.autoSave = mod->getSettingValue<bool>("auto-save");
+        buf.autoSaveWindow = static_cast<int>(mod->getSettingValue<int64_t>("auto-save-window"));
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
@@ -352,7 +359,7 @@ namespace {
             return;
         }
         auto* layer = GameManager::get()->m_playLayer;
-        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease || buf.dashAutoRelease) && layer &&
+        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease || buf.dashAutoRelease || buf.autoSave) && layer &&
             !layer->m_isPracticeMode;
         buf.autoTag->setVisible(on);
     }
@@ -1507,6 +1514,15 @@ namespace {
 
         buf.isPlayer1 = isPlayer1;
         buf.realInput = down;
+        if (buf.guardActive) {
+            // v2.17: auto-save already clicked for you; a click of yours shortly after is the
+            // late one it replaced. Swallow it so you don't jump twice.
+            buf.guardActive = false;
+            buf.guardHold = false;
+            if (down && tickCount - buf.guardTick <= 24) {
+                return true;
+            }
+        }
         if (buf.autoReleased) {
             // the game already let go for you: your real release has nothing left to do
             buf.autoReleased = false;
@@ -1808,6 +1824,76 @@ namespace {
         say("AUTO release{}: holding dies in {}t, letting go lives {}t", dash ? " (dash)" : (robot ? " (robot)" : ""), hold, release);
     }
 
+    // v2.17 auto-save (practice mode only, unless allowed in normal runs): every tick
+    // while you're not holding, check whether doing nothing crashes within the next
+    // `autoSaveWindow` ticks. If it does and clicking right now survives (judged by the
+    // same rules as a click of yours in this mode), click for you. Late clicks of yours
+    // right after are swallowed (see intercept).
+    void tryAutoSave(PlayLayer* layer, PlayerObject* p1) {
+        if (!buf.autoSave || buf.autoReleased || buf.guardHold || layer->m_isPlatformer || !buf.ghost1) {
+            return;
+        }
+        if (!layer->m_isPracticeMode && !buf.autoNormalRuns) {
+            return;
+        }
+        if (!buf.queue.empty() || buf.realInput || buf.appliedInput || !buf.isPlayer1) {
+            return;
+        }
+        if (layer->m_level && layer->m_level->m_twoPlayerMode) {
+            return;
+        }
+        if (buf.guardActive && tickCount - buf.guardTick < 8) {
+            return;  // just clicked; give that click time to act
+        }
+        bool dual = layer->m_gameState.m_isDualMode && layer->m_player2;
+        auto* p2 = dual ? layer->m_player2 : nullptr;
+        if (p1->m_isDead || p1->m_isShip || (p2 && p2->m_isShip)) {
+            return;
+        }
+        if (memorySaysSkip(sliceOf(p1))) {
+            return;  // the ghost has been wrong here before
+        }
+
+        // 1. Doing nothing: crash soon?
+        int window = std::clamp(buf.autoSaveWindow, 2, 24);
+        buf.skipPress = true;
+        buf.orbClick = buf.assumeOrbs;
+        SimEnd end;
+        int idle = simulate(layer, p1, p2, dual, 0, true, window, -1, window, &end);
+        buf.skipPress = false;
+        if (idle >= window || buf.ghostHitPortal) {
+            return;
+        }
+
+        // 2. Clicking now: judged like a click of yours in this mode.
+        bool wave = p1->m_isDart || (p2 && p2->m_isDart);
+        bool robot = !wave && (p1->m_isRobot || (p2 && p2->m_isRobot));
+        bool spider = !wave && !robot && (p1->m_isSpider || (p2 && p2->m_isSpider));
+        bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
+        bool flyer = isFlying(p1) || (p2 && isFlying(p2));
+        int horizon = wave ? fullWaveHorizon(mini) : (flyer ? 48 : std::clamp(buf.groundHorizon, 48, 240));
+        int tap = robot ? robotHold.pick(20, 50) : holdEstimate();
+        int click = wave && !buf.waveV46 ? waveScore(layer, p1, p2, dual, 0, true, horizon, horizon, &end)
+                  : robot && buf.robotSmart ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
+                  : spider && buf.spiderSmart ? spiderScore(layer, p1, p2, dual, 0, horizon, tap, horizon, &end)
+                  : simulateOrbs(layer, p1, p2, dual, 0, true, horizon, wave ? -1 : tap, horizon, &end);
+        if (click < horizon && click < idle + 12) {
+            return;
+        }
+
+        sendButton(layer, true);
+        buf.guardActive = true;
+        buf.guardTick = tickCount;
+        if (wave) {
+            buf.guardHold = true;  // keep going up until your next input
+        }
+        else {
+            int hold = robot ? robotUsedHold : tap;
+            queueInput(std::max(1, hold), false);  // let go like your usual tap
+        }
+        say("AUTO-SAVE click: doing nothing dies in {}t, clicking lives {}t", idle, click);
+    }
+
     void deliverPending(PlayLayer* layer, PlayerObject* player) {
         if (buf.sinceInput <= 998) {
             ++buf.sinceInput;
@@ -1833,10 +1919,11 @@ namespace {
         }
 
         if (buf.queue.empty()) {
-            if (buf.appliedInput != buf.realInput && !buf.autoReleased) {
+            if (buf.appliedInput != buf.realInput && !buf.autoReleased && !buf.guardHold) {
                 sendButton(layer, buf.realInput);
             }
             tryAutoRelease(layer, player);
+            tryAutoSave(layer, player);
             return;
         }
 
@@ -1870,7 +1957,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.16 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.17 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1887,6 +1974,8 @@ class $modify(BufPlayLayer, PlayLayer) {
         resetPending();
         buf.appliedInput = false;
         buf.autoReleased = false;
+        buf.guardActive = false;
+        buf.guardHold = false;
         buf.rapid = 0;
         forgetPress();
         memoryDeath();
@@ -1982,7 +2071,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         this->addChild(buf.panel);
         refreshPanel();
 
-        buf.autoTag = CCLabelBMFont::create("AUTO-RELEASE ON", "bigFont.fnt");
+        buf.autoTag = CCLabelBMFont::create("AUTO INPUTS ON", "bigFont.fnt");
         buf.autoTag->setScale(0.3f);
         buf.autoTag->setColor({ 255, 120, 120 });
         buf.autoTag->setOpacity(200);
@@ -2015,6 +2104,8 @@ class $modify(BufPlayLayer, PlayLayer) {
     void resetLevel() {
         resetPending();
         forgetPress();
+        buf.guardActive = false;
+        buf.guardHold = false;
         refreshAutoTag();
         if (buf.pathNode) {
             buf.pathNode->clear();

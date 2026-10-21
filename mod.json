@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.16.0",
+	"version": "v2.17.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -177,8 +177,8 @@
 		},
 		"auto-release-normal-runs": {
 			"type": "bool",
-			"name": "Auto-release in normal runs",
-			"description": "Let wave / robot auto-release also work outside practice mode (for levels you can't test in practice). While it can act, an 'AUTO-RELEASE ON' tag is shown on screen. Never use it for verified or leaderboard runs.",
+			"name": "Auto inputs in normal runs",
+			"description": "Let auto-release (wave / robot / dash) and auto-save also work outside practice mode. While they can act, an 'AUTO INPUTS ON' tag is shown on screen. Never use it for verified or leaderboard runs.",
 			"default": false
 		},
 		"spider-smart": {
@@ -192,6 +192,20 @@
 			"name": "Dash orb auto-release",
 			"description": "While you hold a dash, if holding longer would crash within the auto-release window and letting go survives, the mod lets go for you (your own release is then ignored). Practice mode only, unless 'Auto-release in normal runs' is on.",
 			"default": false
+		},
+		"auto-save": {
+			"type": "bool",
+			"name": "Auto-save (clicks for you)",
+			"description": "Every tick you're not holding, if doing nothing would crash within the auto-save window and clicking right now survives, the mod clicks for you (a tap like yours; in wave it holds until your next input). A late click of yours right after is ignored so you don't click twice. Practice mode only, unless 'Auto-release in normal runs' is on.",
+			"default": false
+		},
+		"auto-save-window": {
+			"type": "int",
+			"name": "Auto-save window (ticks)",
+			"description": "Auto-save only clicks when doing nothing would crash within this many ticks. Small = it only steps in at the last moment, so your own clicks still decide almost everything. 4 ticks = 1 frame at 60fps.",
+			"default": 8,
+			"min": 2,
+			"max": 24
 		}
 	}
 }
