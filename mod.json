@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.14.0",
+	"version": "v2.15.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -180,6 +180,12 @@
 			"name": "Auto-release in normal runs",
 			"description": "Let wave / robot auto-release also work outside practice mode (for levels you can't test in practice). While it can act, an 'AUTO-RELEASE ON' tag is shown on screen. Never use it for verified or leaderboard runs.",
 			"default": false
+		},
+		"spider-smart": {
+			"type": "bool",
+			"name": "Spider: smart flips",
+			"description": "A spider flip counts as done once you stand on the new surface for 12 ticks, and a crash you could have avoided by flipping back counts as safe. Stops the spider from delaying flips because of obstacles that need your next click.",
+			"default": true
 		}
 	}
 }

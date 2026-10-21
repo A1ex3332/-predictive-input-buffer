@@ -34,6 +34,7 @@
 #include <cmath>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -45,6 +46,7 @@ namespace {
     constexpr int HOOK_PRIORITY = -1000000;
     constexpr float TICK = 0.25f;
     constexpr size_t PANEL_LINES = 8;
+    constexpr int SPIDER_LAND = 12;  // v2.15: ticks on a surface after a spider input = safe
     constexpr int SPAM_STREAK = 3;  // this many fast inputs in a row = wave spam
 
     constexpr uint64_t typeBit(GameObjectType type) {
@@ -182,6 +184,8 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
+        int retapAt = -1;            // v2.15: ticks after the input at which the ghost taps again (-1 = never)
         bool robotSmart = true;      // v2.12: robot presses count as safe if some hold length survives
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
@@ -317,6 +321,7 @@ namespace {
         buf.fullState = mod->getSettingValue<bool>("full-ghost-state");
         buf.learn = mod->getSettingValue<bool>("level-memory");
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
+        buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
@@ -979,6 +984,7 @@ namespace {
         //  which keeps the v4.6 behaviour above.)
 
         bool flying = isFlying(p1) || (dual && p2 && isFlying(p2));
+        bool spiderRun = buf.spiderSmart && (p1->m_isSpider || (second && p2->m_isSpider));
         int total = delay + horizon;
         int survived = 0;
         int airTicks = 0;
@@ -993,6 +999,16 @@ namespace {
                 pressGhost(buf.ghost1, down);
                 if (second) {
                     pressGhost(buf.ghost2, down);
+                }
+            }
+            if (buf.retapAt >= 0) {
+                // v2.15: a second tap (let go, press, let go): "flip back" for the spider
+                int t = tick - delay - buf.retapAt;
+                if (t == 0 || t == 1 || t == 5) {
+                    pressGhost(buf.ghost1, t == 1);
+                    if (second) {
+                        pressGhost(buf.ghost2, t == 1);
+                    }
                 }
             }
             if (releaseAfter >= 0 && tick == delay + releaseAfter) {
@@ -1044,6 +1060,17 @@ namespace {
             if (!grounded) {
                 ++airTicks;
                 groundTicks = 0;
+                continue;
+            }
+            // v2.15 spider: a flip is a teleport with no air time, so the cube's "was in the
+            // air, then landed" never happened and every spider run went the full 130 ticks
+            // into obstacles that need your next click. Now: standing on a surface for
+            // SPIDER_LAND ticks after the input = the flip is done and safe.
+            if (spiderRun) {
+                if (++groundTicks >= SPIDER_LAND) {
+                    safe = true;
+                    break;
+                }
                 continue;
             }
             if (airTicks < 6) {
@@ -1280,8 +1307,36 @@ namespace {
         return best;
     }
 
+    // v2.15 spider scoring, like the wave's: if the run crashes, tap again (flip back) a
+    // little before the crash; if that survives, you could have reacted, so it's safe.
+    constexpr int SPIDER_RETAP[] = { 4, 8, 12 };
+    constexpr int SPIDER_MIN_RETAP = 4;
+
+    int spiderScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int releaseAfter, int target,
+        SimEnd* end) {
+        int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, releaseAfter, target, end);
+        if (ret >= target || *end == SimEnd::StopSearch) {
+            return ret;
+        }
+        for (int margin : SPIDER_RETAP) {
+            int at = ret - margin;
+            if (at < SPIDER_MIN_RETAP) {
+                break;
+            }
+            int length = std::min(horizon, at + 16);
+            buf.retapAt = at;
+            SimEnd e;
+            int retapped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
+            buf.retapAt = -1;
+            if (retapped >= length) {
+                return horizon;
+            }
+        }
+        return ret;
+    }
+
     // Same rules as the cube: the smallest delay that is safe (or clearly better) wins.
-    int searchRobot(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int maxDelay, int base, int* landed) {
+    int searchSmallest(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score) {
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
         int target = std::min(horizon, base + 12);
@@ -1289,7 +1344,7 @@ namespace {
         dbgBestRet = -1;
         for (int k = 1; k <= maxDelay; ++k) {
             SimEnd end;
-            int ret = robotScore(layer, p1, p2, dual, k, horizon, target, &end);
+            int ret = score(k, target, &end);
             if (ret > dbgBestRet) {
                 dbgBestRet = ret;
                 dbgBestK = k;
@@ -1571,8 +1626,11 @@ namespace {
         SimEnd end;
         bool cubeStyleWave = anyWave && !buf.waveV46;
         bool robotPress = down && anyRobot && !anyWave && buf.robotSmart;
+        bool anySpider = p1->m_isSpider || (p2 && p2->m_isSpider);
+        bool spiderPress = down && anySpider && !anyWave && !robotPress && buf.spiderSmart;
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                  : robotPress    ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
+                 : spiderPress   ? spiderScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.trackMovers = false;
         if (base >= horizon) {
@@ -1602,6 +1660,7 @@ namespace {
             SimEnd e;
             int ret = cubeStyleWave ? waveScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
                     : robotPress    ? robotScore(layer, p1, p2, dual, learned, horizon, target, &e)
+                    : spiderPress   ? spiderScore(layer, p1, p2, dual, learned, horizon, releaseAfter, target, &e)
                                     : simulateOrbs(layer, p1, p2, dual, learned, down, horizon, releaseAfter, target, &e);
             if (ret >= target) {
                 saved = learned;
@@ -1611,7 +1670,12 @@ namespace {
         }
         if (saved <= 0) {
             saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
-                  : robotPress    ? searchRobot(layer, p1, p2, dual, horizon, maxDelay, base, &landed)
+                  : robotPress    ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                        return robotScore(layer, p1, p2, dual, k, horizon, target, e);
+                    })
+                  : spiderPress   ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                        return spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
+                    })
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
         }
         if (saved <= 0) {
@@ -1779,7 +1843,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.14 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.15 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

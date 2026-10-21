@@ -25,3 +25,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.10: wave tries 3 turn-away points, stops runs as soon as they are good enough (faster), and centers saves with a 1-tick safety margin. Console is see-through.
 - v2.12 robot: presses count as safe if some hold length survives; robot auto-release (practice only).
 - v2.13 level memory: learns per spot from your runs (delays that worked are tried first, spots where saves failed are left alone, risky spots marked in the path view).
+- v2.15 spider: flips are judged by landing on the new surface, and crashes you could flip away from count as safe.
