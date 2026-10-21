@@ -153,6 +153,10 @@ namespace {
         bool practiceOnly = true;    // v2.1: only buffer in practice mode
         int groundHorizon = 130;     // v2.1: how far ahead cube/ball/spider predictions look
         int releaseShift = 0;        // v2.1: delay of the last delivered press, reused for its release
+        int waveHorizon = 64;        // v2.2: how far ahead wave predictions look (mini = 3/4 of it)
+        bool assumeOrbs = true;      // v2.2: the ghost clicks every orb it touches ("calculation mode")
+        bool held1 = false, held2 = false;   // button state the ghosts are meant to be in
+        bool auto1 = false, auto2 = false;   // an orb auto-click is currently held on this ghost
 
         std::unordered_set<GameObject*> simUsed;
         std::vector<ObjSnapshot> snapshots;
@@ -213,6 +217,8 @@ namespace {
         buf.budgetMs = mod->getSettingValue<double>("sim-budget-ms");
         buf.practiceOnly = mod->getSettingValue<bool>("practice-only");
         buf.groundHorizon = static_cast<int>(mod->getSettingValue<int64_t>("ground-horizon"));
+        buf.waveHorizon = static_cast<int>(mod->getSettingValue<int64_t>("wave-horizon"));
+        buf.assumeOrbs = mod->getSettingValue<bool>("orb-assume-hit");
     }
 
     void applyStage() {
@@ -287,6 +293,7 @@ namespace {
     }
 
     void pressGhost(PlayerObject* ghost, bool down) {
+        (ghost == buf.ghost1 ? buf.held1 : buf.held2) = down;
         if (down) {
             ghost->pushButton(PlayerButton::Jump);
         }
@@ -417,6 +424,22 @@ namespace {
         return player->m_isDart || player->m_isBird || player->m_isSwing;
     }
 
+    // Orb auto-clicks last one ghost update, then let go (unless the test itself is holding).
+    void releaseAutoClicks() {
+        if (buf.auto1) {
+            if (!buf.held1 && buf.ghost1) {
+                buf.ghost1->releaseButton(PlayerButton::Jump);
+            }
+            buf.auto1 = false;
+        }
+        if (buf.auto2) {
+            if (!buf.held2 && buf.ghost2) {
+                buf.ghost2->releaseButton(PlayerButton::Jump);
+            }
+            buf.auto2 = false;
+        }
+    }
+
     enum class SimEnd { Ok, StopSearch };
 
     // Returns ticks survived after the input (horizon = fully safe).
@@ -438,6 +461,8 @@ namespace {
         if (second) {
             copyState(buf.ghost2, p2);
         }
+        buf.held1 = buf.held2 = buf.appliedInput;
+        buf.auto1 = buf.auto2 = false;
 
         float dt = buf.tickLength;
         if (!(dt > 0.001f && dt < 2.0f)) {
@@ -475,6 +500,7 @@ namespace {
             if (second) {
                 advanceGhost(buf.ghost2, dt);
             }
+            releaseAutoClicks();
             if (buf.ghostDied) {
                 died = true;
                 break;
@@ -674,6 +700,10 @@ namespace {
 
         bool anyFlyer = isFlying(p1) || (p2 && isFlying(p2));  // wave / ufo / swing
         int horizon = mini ? 28 : (anyWave ? 38 : (anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240)));
+        if (anyWave) {
+            int wh = std::clamp(buf.waveHorizon, 20, 160);
+            horizon = mini ? std::max(20, wh * 3 / 4) : wh;
+        }
         int maxDelay = anyWave ? buf.ticksWave : buf.ticksAll;
         if (maxDelay <= 0) {
             buf.appliedInput = down;
@@ -766,7 +796,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.2 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1049,6 +1079,19 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             snapshotObject(ring);
         }
         GJBaseGameLayer::playerTouchedRing(player, ring);
+
+        // v2.2 calculation mode: assume you click every orb you touch, on time. Without
+        // this the ghost (which only has the one click being tested) misses the next orb in a
+        // chain, falls, and the mod thinks a perfectly good click is a death.
+        if (buf.simulating && buf.assumeOrbs) {
+            bool first = player == buf.ghost1;
+            bool& held = first ? buf.held1 : buf.held2;
+            bool& autoClick = first ? buf.auto1 : buf.auto2;
+            if (!held && !autoClick) {
+                player->pushButton(PlayerButton::Jump);
+                autoClick = true;
+            }
+        }
     }
 
     // Gravity portals / blue pads / blue orbs: flip only the ghost, no layer effects.
