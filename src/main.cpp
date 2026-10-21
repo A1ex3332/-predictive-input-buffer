@@ -184,6 +184,9 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
+        int simRuns = 0;             // v2.21: predictions run for the current click
+        long simTicks = 0;           // v2.21: ghost ticks stepped for the current click
         bool cbfSync = true;         // v2.18: line the ghost up with Click Between Frames' mid-tick clicks
         float firstStep = 1.f;       // v2.18: fraction of a tick the ghost's first step lasts
         bool inRealUpdate = false;   // v2.18: inside P1's physics step (a CBF click lands here)
@@ -248,6 +251,7 @@ namespace {
         if (starts("no save")) return { 175, 175, 190 };
         if (starts("skip") || starts("prediction budget")) return { 255, 180, 80 };
         if (starts("drift")) return { 255, 240, 150 };
+        if (starts("perf")) return { 150, 200, 255 };
         if (starts("F6") || starts("v2") || starts("path") || starts("Click")) return { 255, 215, 90 };
         if (starts("memory")) return { 255, 150, 220 };
         return { 255, 255, 255 };
@@ -332,6 +336,7 @@ namespace {
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.cbfSync = mod->getSettingValue<bool>("cbf-sync");
+        buf.perfLog = mod->getSettingValue<bool>("perf-log");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
@@ -1104,6 +1109,9 @@ namespace {
             }
             ++groundTicks;
         }
+
+        ++buf.simRuns;
+        buf.simTicks += tick + 1;
 
         // Died or hit an unsimulated portal before the delayed input even fired:
         // longer delays can't do better, stop searching.
@@ -1903,7 +1911,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
     }
-    say("v2.19.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.21 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2340,8 +2348,20 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             }
             recordRealInput(down, p1);
         }
-        if (!buf.simulating && button == 1 && !buf.injecting && intercept(this, down, isPlayer1)) {
-            return;
+        if (!buf.simulating && button == 1 && !buf.injecting) {
+            // v2.21 performance log: what this click cost, measured around the whole decision.
+            buf.simRuns = 0;
+            buf.simTicks = 0;
+            auto start = std::chrono::steady_clock::now();
+            bool held = intercept(this, down, isPlayer1);
+            if (buf.perfLog && buf.simRuns > 0) {
+                double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+                say("perf: {:.2f} ms, {} runs, {} ghost ticks ({:.1f} us/tick)", ms, buf.simRuns, buf.simTicks,
+                    ms * 1000.0 / static_cast<double>(std::max(1L, buf.simTicks)));
+            }
+            if (held) {
+                return;
+            }
         }
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }

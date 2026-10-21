@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.19.1",
+	"version": "v2.21.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -198,6 +198,12 @@
 			"name": "Click Between Frames sync",
 			"description": "With the Click Between Frames mod, a click lands partway through a physics tick. The prediction then starts from that exact moment, and delayed inputs land on the tick the prediction tested. Has no effect without CBF.",
 			"default": true
+		},
+		"perf-log": {
+			"type": "bool",
+			"name": "Performance log (debug)",
+			"description": "After each click, log in the console (F9) how long its predictions took, how many runs and ghost ticks it used, and the cost per ghost tick. Changes nothing about the decisions.",
+			"default": false
 		}
 	}
 }
