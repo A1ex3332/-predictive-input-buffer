@@ -19,4 +19,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - Orbs: also try the other choice: if a prediction dies after touching an orb, it is retried with the opposite click/skip choice.
 - Don't buffer near moving objects: inputs are left untouched when the ghost's path hits recently moved spikes/blocks.
 - Drift check (debug): logs in the K panel how far you strayed from the prediction after each input.
-- Wave predictions now use your own recent wave hold / gap lengths. Platformer levels are never buffered.
+- Wave buffering uses the v4.6 rules exactly (65/50 lookahead, gain bar, opposite-state ghost, 1-tick queued opposite). Platformer levels are never buffered.

@@ -1,4 +1,4 @@
-// Predictive Input Buffer v2.4 (wave hold/gap modeling, wave auto-release, orb both-ways, moving-object guard, drift check, platformer skip)
+// Predictive Input Buffer v2.5 (wave = v4.6 logic; wave auto-release, orb both-ways, moving-object guard, drift check, platformer skip)
 //
 // When you click (or release, in wave / robot), a hidden "ghost" player is simulated
 // ahead with your input. If the ghost dies, the input is retried with 1..N ticks of
@@ -378,8 +378,8 @@ namespace {
     }
 
     // Your recent input timings, so predictions model what you actually do instead of
-    // an infinite hold: cube taps (holding auto-re-jumps), robot holds (they set the jump
-    // height), and wave holds / gaps (how long one diagonal usually lasts).
+    // an infinite hold: cube taps (holding auto-re-jumps) and robot holds (they set the
+    // jump height).
     constexpr int HOLD_SAMPLES = 8;
 
     struct HoldStats {
@@ -406,14 +406,12 @@ namespace {
         }
     };
 
-    HoldStats tapHold, robotHold, waveHold, waveGap;
+    HoldStats tapHold, robotHold;
     int tickCount = 0;
 
     enum class InputKind { Tap, Wave, Robot, Other };
     int pressTick = -1;
     InputKind pressKind = InputKind::Other;
-    int releaseTick = -1;
-    InputKind releaseKind = InputKind::Other;
 
     // Cube / ball / ufo / spider / swing are tapped. Ship, wave and robot are held, and
     // each keeps its own samples so long holds don't pollute the cube's tap length.
@@ -428,14 +426,9 @@ namespace {
     }
 
     void recordRealInput(bool down, PlayerObject* p1) {
-        InputKind kind = kindOf(p1);
         if (down) {
-            if (releaseTick >= 0 && releaseKind == InputKind::Wave && kind == InputKind::Wave) {
-                waveGap.add(tickCount - releaseTick);
-            }
-            releaseTick = -1;
             pressTick = tickCount;
-            pressKind = kind;
+            pressKind = kindOf(p1);
             return;
         }
         if (pressTick < 0) {
@@ -443,14 +436,11 @@ namespace {
         }
         int held = tickCount - pressTick;
         pressTick = -1;
-        releaseTick = tickCount;
-        releaseKind = pressKind;
         if (buf.autoReleased) {
             return;  // the game already let go earlier; this length isn't a real hold
         }
         switch (pressKind) {
             case InputKind::Tap: tapHold.add(held); break;
-            case InputKind::Wave: waveHold.add(held); break;
             case InputKind::Robot: robotHold.add(held); break;
             default: break;
         }
@@ -599,6 +589,16 @@ namespace {
         buf.held1 = buf.held2 = buf.appliedInput;
         buf.auto1 = buf.auto2 = false;
 
+        // v4.6 wave: before a delayed input fires, the ghost is in the opposite state
+        // (holding before a delayed release, released before a delayed press).
+        bool waveRun = p1->m_isDart || (second && p2->m_isDart);
+        if (waveRun && delay > 0 && !buf.skipPress) {
+            pressGhost(buf.ghost1, !down);
+            if (second) {
+                pressGhost(buf.ghost2, !down);
+            }
+        }
+
         float dt = buf.tickLength;
         if (!(dt > 0.001f && dt < 2.0f)) {
             dt = TICK;
@@ -606,7 +606,8 @@ namespace {
 
         // (v1 forced a fake !down button event here for delay > 0, which made delayed
         //  runs start from a different jump-buffer state than the "press now" run.
-        //  The ghost now simply mirrors the real player's button state.)
+        //  The ghost now simply mirrors the real player's button state, except in wave,
+        //  which keeps the v4.6 behaviour above.)
 
         bool flying = isFlying(p1) || (dual && p2 && isFlying(p2));
         int total = delay + horizon;
@@ -775,11 +776,7 @@ namespace {
                 // run clearly clears a spike, saw or corner. A fully safe run needs
                 // 2*k+6 extra ticks and ends the search; otherwise keep the best run that
                 // gains at least 2*k+10 and beats the previous best by more than 2.
-                // v2.3: the 2*k+6 bar only applies to late deaths (last 15 ticks of the
-                // look-ahead), where a delay can just push the crash out of view. Early deaths
-                // that a delay makes fully safe are real saves, so they always count.
-                bool lateDeath = base >= horizon - std::min(15, horizon / 4);
-                if (ret >= horizon && (!lateDeath || ret - base >= k * 2 + 6)) {
+                if (ret >= horizon && ret - base >= k * 2 + 6) {
                     waveBestK = k;
                     waveBestRet = ret;
                     break;
@@ -859,6 +856,18 @@ namespace {
             buf.releaseShift = 0;
         }
 
+        // v4.6 wave: while a delayed input waits, a quick opposite input fires one tick
+        // after it; pressing the same way again cancels that.
+        if (!buf.queue.empty() && p1 && (p1->m_isDart || (p2 && p2->m_isDart))) {
+            auto first = buf.queue.front();
+            buf.queue.erase(buf.queue.begin() + 1, buf.queue.end());
+            if (down != first.down) {
+                queueInput(first.ticksLeft + 1, down);
+            }
+            buf.sinceInput = 0;
+            return true;
+        }
+
         // A delay is in progress: shift this input by the same amount so your
         // rhythm (tap length, hold length, follow-up clicks) is preserved.
         if (!buf.queue.empty()) {
@@ -913,13 +922,7 @@ namespace {
         bool anyFlyer = isFlying(p1) || (p2 && isFlying(p2));  // wave / ufo / swing
         int horizon = anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240);
         if (anyWave) {
-            // v2.4: only judge the part of the diagonal you'd actually fly. A press is held
-            // about as long as your recent wave holds, a release lasts about as long as your
-            // recent gaps; crashes after you'd have turned anyway don't count. 75th
-            // percentile + 10 ticks of margin, full look-ahead until there are samples.
-            int full = fullWaveHorizon(mini);
-            int usual = (down ? waveHold : waveGap).pick(0, 75);
-            horizon = usual > 0 ? std::clamp(usual + 10, 20, full) : full;
+            horizon = fullWaveHorizon(mini);
         }
         int maxDelay = anyWave ? buf.ticksWave : buf.ticksAll;
         if (maxDelay <= 0) {
@@ -1009,9 +1012,7 @@ namespace {
             return;
         }
 
-        int full = fullWaveHorizon(mini);
-        int usual = waveGap.pick(0, 75);
-        int horizon = usual > 0 ? std::clamp(usual + 10, 20, full) : full;
+        int horizon = fullWaveHorizon(mini);
         int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
         if (release < horizon && release < hold + 10) {
             return;
@@ -1083,7 +1084,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.4 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.5 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
