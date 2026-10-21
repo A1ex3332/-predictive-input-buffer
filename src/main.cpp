@@ -1,4 +1,4 @@
-// Predictive Input Buffer v2.1 (cube fixes: longer lookahead, tap-length sampling, matching release delay, practice-only)
+// Predictive Input Buffer v2.4 (wave hold/gap modeling, wave auto-release, orb both-ways, moving-object guard, drift check, platformer skip)
 //
 // When you click (or release, in wave / robot), a hidden "ghost" player is simulated
 // ahead with your input. If the ghost dies, the input is retried with 1..N ticks of
@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -158,11 +159,43 @@ namespace {
         bool held1 = false, held2 = false;   // button state the ghosts are meant to be in
         bool auto1 = false, auto2 = false;   // an orb auto-click is currently held on this ghost
 
+        bool tryBothOrbs = true;     // v2.4: if a run touches an orb and dies, retry with the other orb choice
+        bool orbClick = true;        // v2.4: orb choice of the current run
+        bool touchedOrb = false;     // v2.4: the current run touched an orb
+        bool skipPress = false;      // v2.4: run without pressing anything (auto-release hold check)
+        bool avoidMovers = true;     // v2.4: don't buffer when the ghost's path has moving objects
+        bool sawMover = false;       // v2.4: a run this decision touched a moving object
+        bool autoRelease = false;    // v2.4: wave auto-release (practice mode only)
+        int autoWindow = 6;          // v2.4: hold must die within this many ticks to auto-release
+        bool autoReleased = false;   // v2.4: we released for you; your real release is swallowed
+        bool driftCheck = false;     // v2.4: log how far the real player strays from the prediction
+        std::vector<CCPoint>* recordPath = nullptr;  // v2.4: ghost1 positions of the current run
+
         std::unordered_set<GameObject*> simUsed;
         std::vector<ObjSnapshot> snapshots;
     } buf;
 
     std::string stageText();
+
+    // v2.4 moving-object guard: last known position of each object the ghost collided with.
+    struct Watched {
+        double x;
+        double y;
+        int movedTick;
+    };
+    constexpr int MOVER_TICKS = 120;
+    constexpr size_t WATCH_LIMIT = 4096;
+    std::unordered_map<GameObject*, Watched> watched;
+
+    // v2.4 drift check: the recorded ghost run for your last input and how far you strayed.
+    struct Drift {
+        std::vector<CCPoint> path;
+        bool active = false;
+        int index = -1;
+        int compared = 0;
+        float maxErr = 0.f;
+        int maxAt = 0;
+    } drift;
 
     // In-game panel (K): current stage + the same live log the console shows.
     // Hidden by default; only touched when open, so it costs nothing while closed.
@@ -219,6 +252,12 @@ namespace {
         buf.groundHorizon = static_cast<int>(mod->getSettingValue<int64_t>("ground-horizon"));
         buf.waveHorizon = static_cast<int>(mod->getSettingValue<int64_t>("wave-horizon"));
         buf.assumeOrbs = mod->getSettingValue<bool>("orb-assume-hit");
+        buf.orbClick = buf.assumeOrbs;
+        buf.tryBothOrbs = mod->getSettingValue<bool>("orb-try-both");
+        buf.avoidMovers = mod->getSettingValue<bool>("avoid-moving-objects");
+        buf.autoRelease = mod->getSettingValue<bool>("wave-auto-release");
+        buf.autoWindow = static_cast<int>(mod->getSettingValue<int64_t>("auto-release-window"));
+        buf.driftCheck = mod->getSettingValue<bool>("drift-check");
     }
 
     void applyStage() {
@@ -262,6 +301,10 @@ namespace {
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
+        buf.autoReleased = false;
+        buf.recordPath = nullptr;
+        watched.clear();
+        drift.active = false;
         resetPending();
     }
 
@@ -334,49 +377,141 @@ namespace {
         ghost->m_touchedGravityPortal = real->m_touchedGravityPortal;
     }
 
-    // How long the player usually holds a click, so cube/ball/ufo/spider/swing
-    // predictions model a tap instead of an infinite hold (holding auto-re-jumps).
+    // Your recent input timings, so predictions model what you actually do instead of
+    // an infinite hold: cube taps (holding auto-re-jumps), robot holds (they set the jump
+    // height), and wave holds / gaps (how long one diagonal usually lasts).
     constexpr int HOLD_SAMPLES = 8;
-    int holdSamples[HOLD_SAMPLES] = {};
-    int holdCount = 0;
-    int holdIndex = 0;
+
+    struct HoldStats {
+        int samples[HOLD_SAMPLES] = {};
+        int count = 0;
+        int index = 0;
+
+        void add(int ticks) {
+            samples[index] = std::clamp(ticks, 1, 240);
+            index = (index + 1) % HOLD_SAMPLES;
+            count = std::min(count + 1, HOLD_SAMPLES);
+        }
+
+        // percentile of the recent samples, or `fallback` with no samples yet
+        int pick(int fallback, int percent) const {
+            if (count == 0) {
+                return fallback;
+            }
+            int tmp[HOLD_SAMPLES];
+            std::copy(samples, samples + count, tmp);
+            int at = std::min(count - 1, count * percent / 100);
+            std::nth_element(tmp, tmp + at, tmp + count);
+            return tmp[at];
+        }
+    };
+
+    HoldStats tapHold, robotHold, waveHold, waveGap;
     int tickCount = 0;
+
+    enum class InputKind { Tap, Wave, Robot, Other };
     int pressTick = -1;
-    bool pressWasTap = false;
+    InputKind pressKind = InputKind::Other;
+    int releaseTick = -1;
+    InputKind releaseKind = InputKind::Other;
 
     // Cube / ball / ufo / spider / swing are tapped. Ship, wave and robot are held, and
-    // those long holds must not pollute the tap-length estimate used for the cube.
-    bool isTapMode(PlayerObject* p) {
-        return p && !p->m_isShip && !p->m_isDart && !p->m_isRobot;
+    // each keeps its own samples so long holds don't pollute the cube's tap length.
+    InputKind kindOf(PlayerObject* p) {
+        if (!p || p->m_isShip) {
+            return InputKind::Other;
+        }
+        if (p->m_isDart) {
+            return InputKind::Wave;
+        }
+        return p->m_isRobot ? InputKind::Robot : InputKind::Tap;
     }
 
     void recordRealInput(bool down, PlayerObject* p1) {
+        InputKind kind = kindOf(p1);
         if (down) {
+            if (releaseTick >= 0 && releaseKind == InputKind::Wave && kind == InputKind::Wave) {
+                waveGap.add(tickCount - releaseTick);
+            }
+            releaseTick = -1;
             pressTick = tickCount;
-            pressWasTap = isTapMode(p1);
+            pressKind = kind;
             return;
         }
         if (pressTick < 0) {
             return;
         }
-        int held = std::clamp(tickCount - pressTick, 1, 240);
+        int held = tickCount - pressTick;
         pressTick = -1;
-        if (!pressWasTap) {
-            return;
+        releaseTick = tickCount;
+        releaseKind = pressKind;
+        if (buf.autoReleased) {
+            return;  // the game already let go earlier; this length isn't a real hold
         }
-        holdSamples[holdIndex] = held;
-        holdIndex = (holdIndex + 1) % HOLD_SAMPLES;
-        holdCount = std::min(holdCount + 1, HOLD_SAMPLES);
+        switch (pressKind) {
+            case InputKind::Tap: tapHold.add(held); break;
+            case InputKind::Wave: waveHold.add(held); break;
+            case InputKind::Robot: robotHold.add(held); break;
+            default: break;
+        }
     }
 
     int holdEstimate() {
-        if (holdCount == 0) {
-            return 12;  // ~50 ms, a typical tap
+        return tapHold.pick(12, 50);  // ~50 ms, a typical tap
+    }
+
+    // v2.4 moving-object guard: objects the ghost collided with are watched every tick,
+    // and any that moved recently make the decision "don't buffer" (the ghost sees the
+    // level frozen at the click, so it tests them in the wrong place).
+    void watchObject(GameObject* object) {
+        auto [it, added] = watched.try_emplace(object, Watched { object->m_positionX, object->m_positionY, -MOVER_TICKS });
+        if (!added && tickCount - it->second.movedTick < MOVER_TICKS) {
+            buf.sawMover = true;
         }
-        int tmp[HOLD_SAMPLES];
-        std::copy(holdSamples, holdSamples + holdCount, tmp);
-        std::nth_element(tmp, tmp + holdCount / 2, tmp + holdCount);
-        return tmp[holdCount / 2];
+    }
+
+    void updateWatched() {
+        if (watched.size() > WATCH_LIMIT) {
+            watched.clear();
+        }
+        for (auto& [object, w] : watched) {
+            if (object->m_positionX != w.x || object->m_positionY != w.y) {
+                w.x = object->m_positionX;
+                w.y = object->m_positionY;
+                w.movedTick = tickCount;
+            }
+        }
+    }
+
+    // v2.4 drift check: the ghost run for the input you actually made is recorded, then
+    // compared tick by tick with where the real player goes, until your next input.
+    void finishDrift(char const* why) {
+        if (!drift.active) {
+            return;
+        }
+        drift.active = false;
+        if (drift.compared >= 8) {
+            say("drift {:.1f}u max at t{} over {}t{}", drift.maxErr, drift.maxAt, drift.compared, why);
+        }
+    }
+
+    void driftStep(PlayerObject* real) {
+        if (!drift.active) {
+            return;
+        }
+        if (drift.index >= 0) {
+            if (drift.index >= static_cast<int>(drift.path.size())) {
+                finishDrift("");
+                return;
+            }
+            float err = ccpDistance(real->m_position, drift.path[drift.index]);
+            if (err > drift.maxErr) {
+                drift.maxErr = err;
+                drift.maxAt = drift.index;
+            }
+            ++drift.compared;
+        }
+        ++drift.index;
     }
 
     void snapshotObject(GameObject* object) {
@@ -483,7 +618,7 @@ namespace {
         bool safe = false;
 
         for (; tick < total; ++tick) {
-            if (tick == delay) {
+            if (tick == delay && !buf.skipPress) {
                 pressGhost(buf.ghost1, down);
                 if (second) {
                     pressGhost(buf.ghost2, down);
@@ -513,6 +648,9 @@ namespace {
             if (buf.ghostDied) {
                 died = true;
                 break;
+            }
+            if (buf.recordPath) {
+                buf.recordPath->push_back(buf.ghost1->m_position);
             }
             if (buf.ghostHitPortal) {
                 safe = tick >= delay;
@@ -556,6 +694,52 @@ namespace {
         return safe ? horizon : survived;
     }
 
+    // v2.4: simulate() with the orb setting; if that run touched an orb and didn't make
+    // it, also try the other choice (click it / skip it) and keep whichever lives longer,
+    // like a player who only clicks the orb when they need it.
+    int simulateOrbs(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter,
+        int stopAt, SimEnd* end) {
+        buf.orbClick = buf.assumeOrbs;
+        buf.touchedOrb = false;
+        int first = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, end);
+        if (!buf.tryBothOrbs || !buf.smart || !buf.touchedOrb || first >= stopAt) {
+            return first;
+        }
+        SimEnd firstEnd = *end;
+        buf.orbClick = !buf.assumeOrbs;
+        int second = simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, stopAt, end);
+        buf.orbClick = buf.assumeOrbs;
+        if (firstEnd != SimEnd::StopSearch) {
+            *end = SimEnd::Ok;
+        }
+        return std::max(first, second);
+    }
+
+    // v2.4: record the ghost run for the input that was actually made (drift check).
+    void startDrift(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter) {
+        finishDrift("");
+        if (!buf.driftCheck) {
+            return;
+        }
+        drift.path.clear();
+        buf.recordPath = &drift.path;
+        buf.orbClick = buf.assumeOrbs;
+        SimEnd end;
+        simulate(layer, p1, p2, dual, delay, down, horizon, releaseAfter, delay + horizon, &end);
+        buf.recordPath = nullptr;
+        drift.active = !drift.path.empty();
+        drift.index = -1;
+        drift.compared = 0;
+        drift.maxErr = 0.f;
+        drift.maxAt = 0;
+    }
+
+    // Full wave look-ahead from the setting (mini = 15 less).
+    int fullWaveHorizon(bool mini) {
+        int wh = std::clamp(buf.waveHorizon, 20, 160);
+        return mini ? std::max(20, wh - 15) : wh;  // v4.6: 65 normal / 50 mini
+    }
+
     // v2.1: best delayed run seen by the last search (shown in the "no save" log line)
     int dbgBestK = 0;
     int dbgBestRet = -1;
@@ -577,7 +761,7 @@ namespace {
         for (int k = 1; k <= maxDelay; ++k) {
             SimEnd end;
             // Wave needs the full run to compare gains; elsewhere reaching `target` is enough.
-            int ret = simulate(layer, p1, p2, dual, k, down, horizon, releaseAfter, anyWave ? horizon : target, &end);
+            int ret = simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, anyWave ? horizon : target, &end);
             if (ret > dbgBestRet) {
                 dbgBestRet = ret;
                 dbgBestK = k;
@@ -594,7 +778,7 @@ namespace {
                 // v2.3: the 2*k+6 bar only applies to late deaths (last 15 ticks of the
                 // look-ahead), where a delay can just push the crash out of view. Early deaths
                 // that a delay makes fully safe are real saves, so they always count.
-                bool lateDeath = base >= horizon - 15;
+                bool lateDeath = base >= horizon - std::min(15, horizon / 4);
                 if (ret >= horizon && (!lateDeath || ret - base >= k * 2 + 6)) {
                     waveBestK = k;
                     waveBestRet = ret;
@@ -642,11 +826,23 @@ namespace {
 
         buf.isPlayer1 = isPlayer1;
         buf.realInput = down;
+        if (buf.autoReleased) {
+            // the game already let go for you: your real release has nothing left to do
+            buf.autoReleased = false;
+            if (!down) {
+                return true;
+            }
+        }
         if (!buf.enabled) {
             buf.appliedInput = down;
             return false;
         }
         if (buf.practiceOnly && !layer->m_isPracticeMode) {
+            buf.appliedInput = down;
+            return false;
+        }
+        // v2.4: the ghost never presses left/right, so platformer predictions are meaningless.
+        if (layer->m_isPlatformer) {
             buf.appliedInput = down;
             return false;
         }
@@ -715,10 +911,15 @@ namespace {
         }
 
         bool anyFlyer = isFlying(p1) || (p2 && isFlying(p2));  // wave / ufo / swing
-        int horizon = mini ? 28 : (anyWave ? 38 : (anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240)));
+        int horizon = anyFlyer ? 48 : std::clamp(buf.groundHorizon, 48, 240);
         if (anyWave) {
-            int wh = std::clamp(buf.waveHorizon, 20, 160);
-            horizon = mini ? std::max(20, wh - 15) : wh;  // v4.6: 65 normal / 50 mini
+            // v2.4: only judge the part of the diagonal you'd actually fly. A press is held
+            // about as long as your recent wave holds, a release lasts about as long as your
+            // recent gaps; crashes after you'd have turned anyway don't count. 75th
+            // percentile + 10 ticks of margin, full look-ahead until there are samples.
+            int full = fullWaveHorizon(mini);
+            int usual = (down ? waveHold : waveGap).pick(0, 75);
+            horizon = usual > 0 ? std::clamp(usual + 10, 20, full) : full;
         }
         int maxDelay = anyWave ? buf.ticksWave : buf.ticksAll;
         if (maxDelay <= 0) {
@@ -726,14 +927,20 @@ namespace {
             return false;
         }
 
-        // Wave and robot releases are predicted separately, so hold there; everything
-        // else (cube, ball, ufo, spider, swing) re-triggers while held, so model a tap.
+        // Wave releases are predicted separately, so hold there. Robot jump height depends
+        // on the hold, so use your usual robot hold (once known); everything else (cube,
+        // ball, ufo, spider, swing) re-triggers while held, so model a tap.
         bool anyRobot = p1->m_isRobot || (p2 && p2->m_isRobot);
-        int releaseAfter = (down && !anyWave && !anyRobot) ? holdEstimate() : -1;
+        int releaseAfter = -1;
+        if (down && !anyWave) {
+            releaseAfter = anyRobot ? robotHold.pick(-1, 50) : holdEstimate();
+        }
 
+        buf.sawMover = false;
         SimEnd end;
-        int base = simulate(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
+        int base = simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         if (base >= horizon) {
+            startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
         }
@@ -743,11 +950,19 @@ namespace {
         if (saved <= 0) {
             say("no save: {} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", base, maxDelay,
                 dbgBestK, dbgBestRet, horizon);
+            startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            buf.appliedInput = down;
+            return false;
+        }
+        if (buf.avoidMovers && buf.sawMover) {
+            say("skip +{}t save: moving objects ahead", saved);
+            startDrift(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
         }
 
         say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay);
+        startDrift(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
         buf.shift = saved;
         queueInput(saved, down);
         return true;
@@ -762,24 +977,80 @@ namespace {
         refreshPanel();
     }
 
+    // v2.4 wave auto-release (practice mode only): while you hold in wave, check every
+    // tick whether holding crashes within the next `autoWindow` ticks. If it does and
+    // letting go now clearly survives longer, let go for you. Your own release later is
+    // swallowed, and your next press works as normal.
+    void tryAutoRelease(PlayLayer* layer, PlayerObject* p1) {
+        if (!buf.autoRelease || buf.autoReleased || !layer->m_isPracticeMode || layer->m_isPlatformer) {
+            return;
+        }
+        if (!buf.queue.empty() || !buf.realInput || !buf.appliedInput || !buf.isPlayer1 || !buf.ghost1) {
+            return;
+        }
+        if (layer->m_level && layer->m_level->m_twoPlayerMode) {
+            return;
+        }
+        bool dual = layer->m_gameState.m_isDualMode && layer->m_player2;
+        auto* p2 = dual ? layer->m_player2 : nullptr;
+        if (p1->m_isDead || !(p1->m_isDart || (p2 && p2->m_isDart))) {
+            return;
+        }
+        bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
+
+        int window = std::clamp(buf.autoWindow, 2, 24);
+        buf.sawMover = false;
+        buf.skipPress = true;
+        buf.orbClick = buf.assumeOrbs;
+        SimEnd end;
+        int hold = simulate(layer, p1, p2, dual, 0, true, window, -1, window, &end);
+        buf.skipPress = false;
+        if (hold >= window || buf.ghostHitPortal) {
+            return;
+        }
+
+        int full = fullWaveHorizon(mini);
+        int usual = waveGap.pick(0, 75);
+        int horizon = usual > 0 ? std::clamp(usual + 10, 20, full) : full;
+        int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
+        if (release < horizon && release < hold + 10) {
+            return;
+        }
+        if (buf.avoidMovers && buf.sawMover) {
+            return;
+        }
+        buf.autoReleased = true;
+        sendButton(layer, false);
+        say("AUTO release: holding dies in {}t, letting go lives {}t", hold, release);
+    }
+
     void deliverPending(PlayLayer* layer, PlayerObject* player) {
         if (buf.sinceInput <= 998) {
             ++buf.sinceInput;
+        }
+        if (buf.avoidMovers && !watched.empty()) {
+            updateWatched();
         }
 
         bool dual = layer->m_gameState.m_isDualMode && layer->m_player2;
         if (player->m_isShip || (dual && layer->m_player2->m_isShip)) {
             resetPending();
+            buf.autoReleased = false;
             if (buf.appliedInput != buf.realInput) {
                 sendButton(layer, buf.realInput);
             }
             return;
         }
+        // Left wave while auto-released: the game goes back to what you're really holding.
+        if (buf.autoReleased && !(player->m_isDart || (dual && layer->m_player2->m_isDart))) {
+            buf.autoReleased = false;
+        }
 
         if (buf.queue.empty()) {
-            if (buf.appliedInput != buf.realInput) {
+            if (buf.appliedInput != buf.realInput && !buf.autoReleased) {
                 sendButton(layer, buf.realInput);
             }
+            tryAutoRelease(layer, player);
             return;
         }
 
@@ -812,7 +1083,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Predictive Input Buffer - Live Console");
     }
-    say("v2.3 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.4 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -828,7 +1099,9 @@ class $modify(BufPlayLayer, PlayLayer) {
         }
         resetPending();
         buf.appliedInput = false;
+        buf.autoReleased = false;
         buf.rapid = 0;
+        finishDrift(" (died)");
         PlayLayer::destroyPlayer(player, object);
     }
 
@@ -883,6 +1156,8 @@ class $modify(BufPlayLayer, PlayLayer) {
 
     void resetLevel() {
         resetPending();
+        buf.autoReleased = false;
+        drift.active = false;
         PlayLayer::resetLevel();
     }
 
@@ -958,6 +1233,7 @@ class $modify(BufPlayerObject, PlayerObject) {
         auto* layer = GameManager::get()->m_playLayer;
         if (layer && this == layer->m_player1) {
             ++tickCount;
+            driftStep(this);
             if (buf.enabled) {
                 deliverPending(layer, this);
             }
@@ -1063,6 +1339,9 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             uint64_t bit = type < 64 ? (1ull << type) : 0;
             if (keep & bit) {
                 relevant.push_back(object);
+                if (buf.avoidMovers && (COLLIDING_TYPES & bit)) {
+                    watchObject(object);
+                }
                 continue;
             }
             if (!buf.smart) {
@@ -1091,7 +1370,11 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
 
     void handleButton(bool down, int button, bool isPlayer1) {
         if (!buf.simulating && button == 1 && !buf.injecting) {
-            recordRealInput(down, this->m_player1);
+            auto* p1 = this->m_player1;
+            if (down || (p1 && (p1->m_isDart || p1->m_isRobot))) {
+                finishDrift("");
+            }
+            recordRealInput(down, p1);
         }
         if (!buf.simulating && button == 1 && !buf.injecting && intercept(this, down, isPlayer1)) {
             return;
@@ -1105,13 +1388,14 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                 return;
             }
             snapshotObject(ring);
+            buf.touchedOrb = true;
         }
         GJBaseGameLayer::playerTouchedRing(player, ring);
 
         // v2.2 calculation mode: assume you click every orb you touch, on time. Without
         // this the ghost (which only has the one click being tested) misses the next orb in a
         // chain, falls, and the mod thinks a perfectly good click is a death.
-        if (buf.simulating && buf.assumeOrbs) {
+        if (buf.simulating && buf.orbClick) {
             bool first = player == buf.ghost1;
             bool& held = first ? buf.held1 : buf.held2;
             bool& autoClick = first ? buf.auto1 : buf.auto2;

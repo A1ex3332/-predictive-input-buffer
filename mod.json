@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.3.0",
+	"version": "v2.4.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -72,6 +72,38 @@
 			"name": "Orbs: assume you click them (calculation mode)",
 			"description": "The prediction clicks every orb it touches, as if you hit it on time. Turn off if it predicts deaths for orbs you normally skip.",
 			"default": true
+		},
+		"orb-try-both": {
+			"type": "bool",
+			"name": "Orbs: also try the other choice",
+			"description": "If a prediction touches an orb and dies, run it again with the opposite orb choice (click / skip) and keep the better one, like a player who only clicks the orb when needed.",
+			"default": true
+		},
+		"avoid-moving-objects": {
+			"type": "bool",
+			"name": "Don't buffer near moving objects",
+			"description": "The prediction sees the level frozen at your click. If the ghost's path touches spikes or blocks that moved recently (move/rotate triggers), the input goes through untouched instead of being delayed.",
+			"default": true
+		},
+		"wave-auto-release": {
+			"type": "bool",
+			"name": "Wave auto-release (practice only)",
+			"description": "While you hold in wave, if holding would crash within the window below and letting go clearly survives, the mod lets go for you. Your own release is then ignored. Only works in practice mode, whatever 'Practice mode only' is set to.",
+			"default": false
+		},
+		"auto-release-window": {
+			"type": "int",
+			"name": "Auto-release window (ticks)",
+			"description": "Auto-release only fires when holding would crash within this many ticks. Small = lets go at the last moment. 4 ticks = 1 frame at 60fps.",
+			"default": 6,
+			"min": 2,
+			"max": 24
+		},
+		"drift-check": {
+			"type": "bool",
+			"name": "Drift check (debug)",
+			"description": "After each input, compare where the prediction said you'd go with where you actually went, and log the biggest gap in the K panel. Use it to see how precise the predictions are on a level.",
+			"default": false
 		}
 	}
 }
