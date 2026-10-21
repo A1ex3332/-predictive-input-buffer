@@ -1,4 +1,4 @@
-// Predictive Input Buffer v2.5 (wave = v4.6 logic; wave auto-release, orb both-ways, moving-object guard, drift check, platformer skip)
+// Basu Input Buffer v2.9 (cube-style wave, wave auto-release, orb alignment, full ghost state, drift check, in-game console on `)
 //
 // When you click (or release, in wave / robot), a hidden "ghost" player is simulated
 // ahead with your input. If the ghost dies, the input is retried with 1..N ticks of
@@ -13,7 +13,7 @@
 //    so taps and hold lengths are preserved (no more swallowed clicks / 1-tick taps).
 //  - Time budget per click so big windows don't hitch.
 //  - Fixes: ghost lifetime, init using `this`, time-warp dt, F6 only when GD focused,
-//    dead flipGravity hook priority, optional console, K panel (stage + live log, hidden by default).
+//    dead flipGravity hook priority, optional console, in-game console (stage + live log, hidden by default).
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
@@ -126,8 +126,8 @@ namespace {
         CCLayer* ghostLayer = nullptr;
 
         CCNode* panel = nullptr;
-        CCLabelBMFont* panelTitle = nullptr;
-        CCLabelBMFont* panelLog = nullptr;
+        CCLabelBMFont* panelTitle = nullptr;               // current stage
+        std::vector<CCLabelBMFont*> panelLines;            // one label per log line (colored)
         bool panelOpen = false;  // closed by default, remembered for the session
         std::deque<std::string> logLines;
 
@@ -208,7 +208,24 @@ namespace {
         int maxAt = 0;
     } drift;
 
-    // In-game panel (K): current stage + the same live log the console shows.
+    constexpr float PANEL_W = 320.f;
+    constexpr float PANEL_H = 178.f;
+
+    // Log line colors: saves green, orbs cyan, auto-release purple, misses grey,
+    // budget / skips orange, drift yellow.
+    ccColor3B lineColor(std::string const& line) {
+        auto starts = [&](char const* prefix) { return line.rfind(prefix, 0) == 0; };
+        if (starts("SAVED")) return { 120, 255, 140 };
+        if (starts("ORB")) return { 90, 220, 255 };
+        if (starts("AUTO")) return { 200, 150, 255 };
+        if (starts("no save")) return { 175, 175, 190 };
+        if (starts("skip") || starts("prediction budget")) return { 255, 180, 80 };
+        if (starts("drift")) return { 255, 240, 150 };
+        if (starts("F6") || starts("v2")) return { 255, 215, 90 };
+        return { 255, 255, 255 };
+    }
+
+    // In-game console (` key): current stage + the same live log the Windows console shows.
     // Hidden by default; only touched when open, so it costs nothing while closed.
     void refreshPanel() {
         if (!buf.panel) {
@@ -219,12 +236,21 @@ namespace {
             return;
         }
         buf.panelTitle->setString(stageText().c_str());
-        std::string text = "F6: change stage    K: hide\n";
-        for (auto const& line : buf.logLines) {
-            text += line;
-            text += '\n';
+        buf.panelTitle->limitLabelWidth(PANEL_W - 20.f, 0.4f, 0.2f);
+        size_t first = buf.logLines.size() > buf.panelLines.size() ? buf.logLines.size() - buf.panelLines.size() : 0;
+        for (size_t i = 0; i < buf.panelLines.size(); ++i) {
+            auto* label = buf.panelLines[i];
+            size_t at = first + i;
+            if (at < buf.logLines.size()) {
+                auto const& line = buf.logLines[at];
+                label->setString(line.c_str());
+                label->setColor(lineColor(line));
+                label->limitLabelWidth(PANEL_W - 20.f, 0.55f, 0.3f);
+            }
+            else {
+                label->setString("");
+            }
         }
-        buf.panelLog->setString(text.c_str());
     }
 
     // Log line -> in-game panel history, plus the Windows console if enabled.
@@ -312,7 +338,7 @@ namespace {
         // panel nodes are owned by the PlayLayer
         buf.panel = nullptr;
         buf.panelTitle = nullptr;
-        buf.panelLog = nullptr;
+        buf.panelLines.clear();
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
@@ -1331,9 +1357,9 @@ $on_mod(Loaded) {
         AllocConsole();
         FILE* out = nullptr;
         freopen_s(&out, "CONOUT$", "w", stdout);
-        SetConsoleTitleA("Predictive Input Buffer - Live Console");
+        SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.8 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.9 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -1365,28 +1391,77 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
 
-        // K panel: hidden unless the player opens it.
-        constexpr float W = 250.f;
-        constexpr float H = 130.f;
+        // In-game console (` key): hidden unless the player opens it.
+        constexpr float W = PANEL_W;
+        constexpr float H = PANEL_H;
         auto win = CCDirector::get()->getWinSize();
         buf.panel = CCNode::create();
-        buf.panel->setPosition({ 5.f, win.height - H - 5.f });
+        buf.panel->setPosition({ 8.f, win.height - H - 8.f });
         buf.panel->setZOrder(1000);
 
-        auto* bg = CCLayerColor::create({ 0, 0, 0, 160 }, W, H);
-        buf.panel->addChild(bg);
+        // Background: the game's own blue background art, cropped to the panel and
+        // darkened from top to bottom so the text stays readable.
+        auto* stencil = CCLayerColor::create({ 255, 255, 255, 255 }, W, H);
+        auto* clip = CCClippingNode::create(stencil);
+        if (auto* art = CCSprite::create("game_bg_01_001.png")) {
+            auto size = art->getContentSize();
+            art->setScale(std::max(W / size.width, H / size.height));
+            art->setPosition({ W / 2.f, H / 2.f });
+            art->setColor({ 40, 120, 255 });
+            clip->addChild(art);
+        }
+        auto* shade = CCLayerGradient::create({ 0, 0, 0, 110 }, { 0, 0, 0, 215 }, { 0.f, -1.f });
+        shade->setContentSize({ W, H });
+        clip->addChild(shade);
+        auto* header = CCLayerColor::create({ 0, 0, 0, 120 }, W, 28.f);
+        header->setPosition({ 0.f, H - 28.f });
+        clip->addChild(header);
+        auto* rule = CCLayerColor::create({ 255, 255, 255, 45 }, W - 16.f, 1.f);
+        rule->setPosition({ 8.f, H - 46.f });
+        clip->addChild(rule);
+        buf.panel->addChild(clip);
+
+        if (auto* frame = CCScale9Sprite::create("GJ_square07.png")) {
+            frame->setContentSize({ W, H });
+            frame->setPosition({ W / 2.f, H / 2.f });
+            buf.panel->addChild(frame);
+        }
+
+        auto* title = CCLabelBMFont::create("Basu Input Buffer", "goldFont.fnt");
+        title->setScale(0.55f);
+        title->setAnchorPoint({ 0.f, 0.5f });
+        title->setPosition({ 10.f, H - 14.f });
+        buf.panel->addChild(title);
+
+        auto* version = CCLabelBMFont::create(Mod::get()->getVersion().toVString().c_str(), "chatFont.fnt");
+        version->setScale(0.45f);
+        version->setOpacity(150);
+        version->setAnchorPoint({ 1.f, 0.5f });
+        version->setPosition({ W - 10.f, H - 14.f });
+        buf.panel->addChild(version);
 
         buf.panelTitle = CCLabelBMFont::create("", "bigFont.fnt");
-        buf.panelTitle->setScale(0.35f);
-        buf.panelTitle->setAnchorPoint({ 0.f, 1.f });
-        buf.panelTitle->setPosition({ 6.f, H - 5.f });
+        buf.panelTitle->setScale(0.4f);
+        buf.panelTitle->setAnchorPoint({ 0.f, 0.5f });
+        buf.panelTitle->setPosition({ 10.f, H - 37.f });
         buf.panel->addChild(buf.panelTitle);
 
-        buf.panelLog = CCLabelBMFont::create("", "chatFont.fnt");
-        buf.panelLog->setScale(0.5f);
-        buf.panelLog->setAnchorPoint({ 0.f, 1.f });
-        buf.panelLog->setPosition({ 6.f, H - 22.f });
-        buf.panel->addChild(buf.panelLog);
+        buf.panelLines.clear();
+        for (size_t i = 0; i < PANEL_LINES; ++i) {
+            auto* line = CCLabelBMFont::create("", "chatFont.fnt");
+            line->setScale(0.55f);
+            line->setAnchorPoint({ 0.f, 0.5f });
+            line->setPosition({ 10.f, H - 57.f - i * 13.f });
+            buf.panel->addChild(line);
+            buf.panelLines.push_back(line);
+        }
+
+        auto* hint = CCLabelBMFont::create("F6  change stage      `  hide console", "chatFont.fnt");
+        hint->setScale(0.45f);
+        hint->setColor({ 160, 190, 255 });
+        hint->setAnchorPoint({ 0.5f, 0.5f });
+        hint->setPosition({ W / 2.f, 9.f });
+        buf.panel->addChild(hint);
 
         this->addChild(buf.panel);
         refreshPanel();
@@ -1541,7 +1616,7 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
             if (key == KEY_F6) {
                 cycleStage();
             }
-            else if (key == KEY_K) {
+            else if (key == KEY_OEM3) {  // ` (backtick / tilde key)
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
             }

@@ -1,4 +1,4 @@
-# Predictive Input Buffer (Geode)
+# Basu Input Buffer (Geode)
 
 ## Get the .geode file without installing anything
 1. Create a free GitHub repo and upload everything in this folder (keep the .github folder).
@@ -10,7 +10,7 @@
 Install the Geode CLI and SDK, then run:  geode build
 
 ## Keys
-F6 cycle stage | F7 toggle wave mode
+F6 cycle stage | ` (backtick) open/close the in-game console
 
 Edit "yourname" in mod.json first. Practice use only; do not use for verified or leaderboard runs.
 
@@ -18,7 +18,7 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - Wave auto-release (practice only, off by default): lets go for you when holding would crash within the window and letting go survives.
 - Orbs: also try the other choice: if a prediction dies after touching an orb, it is retried with the opposite click/skip choice.
 - Don't buffer near moving objects (experimental, off by default): inputs are left untouched when the ghost's path hits recently moved spikes/blocks.
-- Drift check (debug): logs in the K panel how far you strayed from the prediction after each input.
+- Drift check (debug): logs in the in-game console how far you strayed from the prediction after each input.
 - Wave (v2.7): cube-style. A crash you could still turn away from counts as safe; the smallest delay that clears the obstacle wins; inputs during a delay keep their rhythm. "Wave: old v4.6 logic" brings back the v4.6 rules. Platformer levels are never buffered.
 - Orb alignment (v2.6): a press made up to 4 frames before an orb is held back until you're inside the orb, so it hits.
 - v2.8: the ghost copies the full player state (slopes, reverse, sideways, forces, dash), size portals are simulated and mirror portals no longer stop the prediction.
