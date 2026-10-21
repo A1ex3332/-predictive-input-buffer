@@ -177,6 +177,8 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool robotSmart = true;      // v2.12: robot presses count as safe if some hold length survives
+        bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
         int simTick = 0;             // v2.6: tick of the current run
@@ -304,6 +306,8 @@ namespace {
         buf.orbAlign = mod->getSettingValue<bool>("orb-align");
         buf.orbAlignGround = mod->getSettingValue<bool>("orb-align-ground");
         buf.fullState = mod->getSettingValue<bool>("full-ghost-state");
+        buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
+        buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
         buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin");
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
@@ -1036,6 +1040,66 @@ namespace {
 
     // v2.7 wave search, same rules as the cube: the smallest delay that is safe (or
     // clearly better than now) wins, so turns are only held back as long as needed.
+    // v2.12 robot scoring. A robot press is a jump whose height you set by when you let go,
+    // so "pressing now crashes" only if NO release time saves it. Your usual hold is tried
+    // first, then short to long holds. (Before, only your usual hold was tested, so a press
+    // that needed a shorter or longer hold looked like a death and got delayed for nothing.)
+    constexpr int ROBOT_HOLDS[] = { 6, 14, 26, 45 };
+    int robotUsedHold = -1;   // hold length that made the last robot run survive
+
+    int robotScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int target, SimEnd* end) {
+        int usual = robotHold.pick(20, 50);
+        int best = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, usual, target, end);
+        robotUsedHold = usual;
+        if (best >= target || *end == SimEnd::StopSearch) {
+            return best;
+        }
+        for (int hold : ROBOT_HOLDS) {
+            if (std::abs(hold - usual) < 3) {
+                continue;
+            }
+            SimEnd e;
+            int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, hold, target, &e);
+            if (ret > best) {
+                best = ret;
+                robotUsedHold = hold;
+            }
+            if (best >= target) {
+                break;
+            }
+        }
+        return best;
+    }
+
+    // Same rules as the cube: the smallest delay that is safe (or clearly better) wins.
+    int searchRobot(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int horizon, int maxDelay, int base, int* landed) {
+        using clock = std::chrono::steady_clock;
+        auto start = clock::now();
+        int target = std::min(horizon, base + 12);
+        dbgBestK = 0;
+        dbgBestRet = -1;
+        for (int k = 1; k <= maxDelay; ++k) {
+            SimEnd end;
+            int ret = robotScore(layer, p1, p2, dual, k, horizon, target, &end);
+            if (ret > dbgBestRet) {
+                dbgBestRet = ret;
+                dbgBestK = k;
+            }
+            if (end == SimEnd::StopSearch) {
+                return 0;
+            }
+            if (ret >= target) {
+                *landed = ret;
+                return k;
+            }
+            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
+                say("prediction budget hit at +{} ticks", k);
+                return 0;
+            }
+        }
+        return 0;
+    }
+
     bool marginUsed = false;  // the last wave save took the +1 tick safety margin
 
     int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay, int base,
@@ -1297,7 +1361,9 @@ namespace {
         buf.trackMovers = buf.avoidMovers;
         SimEnd end;
         bool cubeStyleWave = anyWave && !buf.waveV46;
+        bool robotPress = down && anyRobot && !anyWave && buf.robotSmart;
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
+                 : robotPress    ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.trackMovers = false;
         if (base >= horizon) {
@@ -1308,6 +1374,7 @@ namespace {
 
         int landed = 0;
         int saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
+                  : robotPress    ? searchRobot(layer, p1, p2, dual, horizon, maxDelay, base, &landed)
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
         if (saved <= 0) {
             say("no save: {} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", base, maxDelay,
@@ -1330,8 +1397,11 @@ namespace {
             return false;
         }
 
+        if (robotPress) {
+            releaseAfter = robotUsedHold;  // the path view / drift check show the hold that works
+        }
         say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay,
-            cubeStyleWave && marginUsed ? "  +margin" : "");
+            cubeStyleWave && marginUsed ? "  +margin" : (robotPress ? fmt::format("  hold {}t", robotUsedHold) : std::string()));
         decided(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
         buf.shift = saved;
         queueInput(saved, down);
@@ -1358,7 +1428,7 @@ namespace {
     // letting go now clearly survives longer, let go for you. Your own release later is
     // swallowed, and your next press works as normal.
     void tryAutoRelease(PlayLayer* layer, PlayerObject* p1) {
-        if (!buf.autoRelease || buf.autoReleased || !layer->m_isPracticeMode || layer->m_isPlatformer) {
+        if ((!buf.autoRelease && !buf.robotAutoRelease) || buf.autoReleased || !layer->m_isPracticeMode || layer->m_isPlatformer) {
             return;
         }
         if (!buf.queue.empty() || !buf.realInput || !buf.appliedInput || !buf.isPlayer1 || !buf.ghost1) {
@@ -1369,7 +1439,9 @@ namespace {
         }
         bool dual = layer->m_gameState.m_isDualMode && layer->m_player2;
         auto* p2 = dual ? layer->m_player2 : nullptr;
-        if (p1->m_isDead || !(p1->m_isDart || (p2 && p2->m_isDart))) {
+        bool wave = p1->m_isDart || (p2 && p2->m_isDart);
+        bool robot = !wave && (p1->m_isRobot || (p2 && p2->m_isRobot));
+        if (p1->m_isDead || !((wave && buf.autoRelease) || (robot && buf.robotAutoRelease))) {
             return;
         }
         bool mini = (p1->m_isDart && p1->m_vehicleSize < 1.f) || (p2 && p2->m_isDart && p2->m_vehicleSize < 1.f);
@@ -1385,7 +1457,8 @@ namespace {
             return;
         }
 
-        int horizon = fullWaveHorizon(mini);
+        // v2.12 robot: letting go ends the jump boost; judged like a cube jump (landing = safe).
+        int horizon = wave ? fullWaveHorizon(mini) : std::clamp(buf.groundHorizon, 48, 240);
         buf.trackMovers = buf.avoidMovers;
         int release = simulateOrbs(layer, p1, p2, dual, 0, false, horizon, -1, horizon, &end);
         buf.trackMovers = false;
@@ -1397,7 +1470,7 @@ namespace {
         }
         buf.autoReleased = true;
         sendButton(layer, false);
-        say("AUTO release: holding dies in {}t, letting go lives {}t", hold, release);
+        say("AUTO release{}: holding dies in {}t, letting go lives {}t", robot ? " (robot)" : "", hold, release);
     }
 
     void deliverPending(PlayLayer* layer, PlayerObject* player) {
@@ -1418,8 +1491,9 @@ namespace {
             }
             return;
         }
-        // Left wave while auto-released: the game goes back to what you're really holding.
-        if (buf.autoReleased && !(player->m_isDart || (dual && layer->m_player2->m_isDart))) {
+        // Left wave / robot while auto-released: the game goes back to what you're really holding.
+        bool autoMode = player->m_isDart || player->m_isRobot || (dual && (layer->m_player2->m_isDart || layer->m_player2->m_isRobot));
+        if (buf.autoReleased && !autoMode) {
             buf.autoReleased = false;
         }
 
@@ -1461,7 +1535,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.11.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.12 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

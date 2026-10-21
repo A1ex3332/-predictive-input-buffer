@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.11.1",
+	"version": "v2.12.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -156,6 +156,18 @@
 			"name": "Full ghost state (v2.8)",
 			"description": "Copy the full player state (slopes, timers, forces, dash...) into the prediction ghost. Turn off to go back to the v2.7 ghost if predictions feel worse.",
 			"default": true
+		},
+		"robot-smart": {
+			"type": "bool",
+			"name": "Robot: smart jumps",
+			"description": "A robot press only counts as a crash if no hold length saves it (your usual hold, then short to long holds). Saves are found for presses that need a different jump height, and presses you can still control aren't delayed.",
+			"default": true
+		},
+		"robot-auto-release": {
+			"type": "bool",
+			"name": "Robot auto-release (practice only)",
+			"description": "While you hold a robot jump, if holding longer would crash within the auto-release window and letting go survives, the mod lets go for you. Your own release is then ignored. Practice mode only.",
+			"default": false
 		}
 	}
 }
