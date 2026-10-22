@@ -24,6 +24,7 @@
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/EndLevelLayer.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/ui/Popup.hpp>
 #include <Geode/modify/PlayerObject.hpp>
@@ -236,6 +237,8 @@ namespace {
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
         CCLabelBMFont* autoTag = nullptr;  // v2.14: on-screen "AUTO-RELEASE ON" tag
+        CCLabelBMFont* watermark = nullptr;  // v2.46: always-on "Basu Input Buffer" label while the buffer is on
+        bool usedThisAttempt = false;      // v2.46: the buffer was on at some point of this attempt
         bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
         int orbWindow = 16;          // v2.6: how far ahead (ticks) an orb may be for that
@@ -451,6 +454,16 @@ namespace {
     }
 
     // v2.14: a run outside practice where auto-release can press for you is marked on screen.
+    // v2.46 watermark: whenever the buffer is on (any stage but OFF) the level shows it, and
+    // can't be turned off, so runs made with the mod are recognisable.
+    void refreshWatermark() {
+        if (!buf.watermark) {
+            return;
+        }
+        buf.watermark->setVisible(buf.enabled);
+        buf.watermark->setString(fmt::format("Basu Input Buffer  |  {}", stageText()).c_str());
+    }
+
     void refreshAutoTag() {
         if (!buf.autoTag) {
             return;
@@ -535,6 +548,7 @@ namespace {
         buf.panelLines.clear();
         buf.pathNode = nullptr;
         buf.autoTag = nullptr;
+        buf.watermark = nullptr;
         buf.simulating = false;
         buf.injecting = false;
         buf.rapid = 0;
@@ -2370,6 +2384,7 @@ namespace {
         readSettings();
         say("F6 -> {}", stageText());
         refreshAutoTag();
+        refreshWatermark();
         refreshPanel();
     }
 
@@ -2639,6 +2654,24 @@ public:
     }
 };
 
+// v2.46: the level complete screen says so if the buffer was on during the attempt.
+class $modify(BufEndLevelLayer, EndLevelLayer) {
+    void customSetup() {
+        EndLevelLayer::customSetup();
+        if (!buf.usedThisAttempt) {
+            return;
+        }
+        auto win = CCDirector::get()->getWinSize();
+        auto* label = CCLabelBMFont::create("Basu Input Buffer was on", "bigFont.fnt");
+        label->setScale(0.35f);
+        label->setColor({ 150, 205, 255 });
+        label->setOpacity(170);
+        label->setAnchorPoint({ 1.f, 1.f });
+        label->setPosition({ win.width - 6.f, win.height - 4.f });
+        this->addChild(label, 100);
+    }
+};
+
 class $modify(BufPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
@@ -2674,7 +2707,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.45 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.46 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2814,6 +2847,17 @@ class $modify(BufPlayLayer, PlayLayer) {
         this->addChild(buf.panel);
         refreshPanel();
 
+        buf.watermark = CCLabelBMFont::create("", "bigFont.fnt");
+        buf.watermark->setScale(0.28f);
+        buf.watermark->setColor({ 150, 205, 255 });
+        buf.watermark->setOpacity(153);
+        buf.watermark->setAnchorPoint({ 0.f, 0.f });
+        buf.watermark->setPosition({ 6.f, 4.f });
+        buf.watermark->setZOrder(1000);
+        this->addChild(buf.watermark);
+        buf.usedThisAttempt = false;
+        refreshWatermark();
+
         buf.autoTag = CCLabelBMFont::create("AUTO INPUTS ON", "bigFont.fnt");
         buf.autoTag->setScale(0.24f);
         buf.autoTag->setColor({ 255, 120, 120 });
@@ -2845,6 +2889,7 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void resetLevel() {
+        buf.usedThisAttempt = false;
         resetPending();
         forgetPress();
         refreshAutoTag();
@@ -2932,6 +2977,9 @@ class $modify(BufPlayerObject, PlayerObject) {
         if (layer && this == layer->m_player1) {
             ++tickCount;
             ++logClock;
+            if (buf.enabled) {
+                buf.usedThisAttempt = true;
+            }
             driftStep(this);
             memoryTick();
             if (buf.enabled) {
