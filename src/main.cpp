@@ -194,6 +194,7 @@ namespace {
         bool ignoreTouching = true;  // v2.31: hazards you touch right now without dying can't kill the ghost
         bool haveRealRect = false;
         CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
+        std::unordered_set<GameObject*> harmless;  // hazards on you at the start of this prediction
         bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
         bool killerSeen = false;
         int killerTick = -1;
@@ -1138,6 +1139,7 @@ namespace {
 
         bool second = dual && buf.ghost2 && p2;
         buf.haveRealRect = buf.ignoreTouching;
+        buf.harmless.clear();
         if (buf.haveRealRect) {
             buf.realRect1 = p1->getObjectRect();
             buf.realRect2 = second ? p2->getObjectRect() : buf.realRect1;
@@ -2718,10 +2720,18 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                 // let kill you (a spike made to follow the player, noclip...). Seen in GRIEF:
                 // a spike always sitting exactly on the player killed every wave prediction on
                 // its first tick.
+                // Decided on the first ticks and kept by object, so a spike that follows you
+                // stays ignored even when "predict moving objects" moves it along.
                 if (buf.haveRealRect && (bit & HAZARD_TYPES)) {
-                    auto const& r = object->getObjectRect();
-                    if (r.intersectsRect(buf.realRect1) || r.intersectsRect(buf.realRect2)) {
+                    if (buf.harmless.contains(object)) {
                         continue;
+                    }
+                    if (buf.simTick <= 1) {
+                        auto const& r = object->getObjectRect();
+                        if (r.intersectsRect(buf.realRect1) || r.intersectsRect(buf.realRect2)) {
+                            buf.harmless.insert(object);
+                            continue;
+                        }
                     }
                 }
                 relevant.push_back(object);
