@@ -58,8 +58,10 @@ namespace {
     }
 
     // Objects the ghost always collides with.
+    // v2.49: collision blocks (CollisionObject) are left out: they have no physical effect,
+    // and a ghost touching them could make collision triggers fire wrong or not at all.
     constexpr uint64_t COLLIDING_TYPES = typeBit(GameObjectType::Solid) | typeBit(GameObjectType::Hazard) | typeBit(GameObjectType::Slope) |
-                                         typeBit(GameObjectType::CollisionObject) | typeBit(GameObjectType::AnimatedHazard);
+                                         typeBit(GameObjectType::AnimatedHazard);
 
     constexpr uint64_t HAZARD_TYPES = typeBit(GameObjectType::Hazard) | typeBit(GameObjectType::AnimatedHazard);
 
@@ -2040,6 +2042,14 @@ namespace {
                 buf.pathNode->clear();
                 buf.pathNode->drawDot(p1->getPosition(), 4.f, { 0.6f, 0.6f, 0.65f, 0.9f });
             }
+            // v2.49: inputs still waiting are sent now, in order, instead of being dropped. A
+            // dropped press was a lost click: no jump, and click / touch / event triggers
+            // never saw it.
+            for (auto const& q : buf.queue) {
+                if (q.down != buf.appliedInput) {
+                    sendButton(layer, q.down);
+                }
+            }
             resetPending();
             buf.appliedInput = down;
             return false;
@@ -2713,7 +2723,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.48 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.49 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
