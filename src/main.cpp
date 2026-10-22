@@ -2537,8 +2537,59 @@ class BufferMenu : public geode::Popup {
         { "explain-inputs", "Explain inputs (debug)" },
     };
 
+    // v2.50: cute theme
+    static constexpr ccColor3B PINK { 255, 150, 205 };
+    static constexpr ccColor3B SOFT_PINK { 255, 205, 230 };
+    static constexpr ccColor3B LILAC { 215, 190, 255 };
+
     CCLabelBMFont* m_stage = nullptr;
     CCLabelBMFont* m_status = nullptr;
+    std::vector<CCLabelBMFont*> m_labels;
+
+    static CCSprite* heart(float scale, ccColor3B color) {
+        auto* sprite = CCSprite::create("heart.png"_spr);
+        sprite->setScale(scale);
+        sprite->setColor(color);
+        return sprite;
+    }
+
+    static void pulse(CCNode* node, float scale) {
+        node->runAction(CCRepeatForever::create(CCSequence::create(CCEaseSineInOut::create(CCScaleTo::create(0.45f, scale * 1.18f)),
+            CCEaseSineInOut::create(CCScaleTo::create(0.45f, scale)), nullptr)));
+    }
+
+    // hearts and sparkles drifting up behind the switches; the tag holds the rise time (x10)
+    void addFloaters() {
+        for (int i = 0; i < 9; ++i) {
+            bool sparkle = i % 3 == 2;
+            auto* sprite = sparkle ? CCSprite::create("sparkle.png"_spr) : heart(0.3f + 0.05f * (i % 3), i % 2 ? PINK : LILAC);
+            if (sparkle) {
+                sprite->setScale(0.35f);
+            }
+            sprite->setOpacity(0);
+            sprite->setPosition({ 20.f + 340.f * ((i * 37) % 100) / 100.f, 20.f });
+            sprite->setTag(50 + 10 * (i % 4));
+            sprite->runAction(CCSequence::create(CCDelayTime::create(0.7f * i),
+                CCCallFuncN::create(this, callfuncN_selector(BufferMenu::loopFloater)), nullptr));
+            m_mainLayer->addChild(sprite, -1);
+        }
+    }
+
+    void loopFloater(CCNode* node) {
+        float rise = node->getTag() / 10.f;
+        node->runAction(CCRepeatForever::create(CCSequence::create(
+            CCSpawn::create(CCMoveBy::create(rise, { 0.f, 270.f }),
+                CCSequence::create(CCFadeTo::create(rise * 0.3f, 110), CCDelayTime::create(rise * 0.4f), CCFadeTo::create(rise * 0.3f, 0),
+                    nullptr),
+                nullptr),
+            CCPlace::create(node->getPosition()), nullptr)));
+    }
+
+    void colorLabels() {
+        for (size_t i = 0; i < m_labels.size(); ++i) {
+            m_labels[i]->setColor(optionValue(OPTIONS[i]) ? SOFT_PINK : ccColor3B { 170, 160, 185 });
+        }
+    }
 
     static bool optionValue(Option const& o) {
         return o.key ? Mod::get()->getSettingValue<bool>(o.key) : buf.showPath;
@@ -2550,6 +2601,7 @@ class BufferMenu : public geode::Popup {
         float dt = buf.tickLength > 0.001f ? buf.tickLength : TICK;
         m_status->setString(fmt::format("physics {:.0f}/s  |  CBF {}  |  memory {} spots", 60.f / dt,
             Loader::get()->isModLoaded("syzzi.click_between_frames") ? "on" : "off", memorySpots()).c_str());
+        colorLabels();
     }
 
     void onToggle(CCObject* sender) {
@@ -2592,17 +2644,49 @@ class BufferMenu : public geode::Popup {
     }
 
     CCMenuItemSpriteExtra* textButton(char const* text, SEL_MenuHandler handler, float scale = 0.6f) {
-        auto* sprite = ButtonSprite::create(text, "bigFont.fnt", "GJ_button_04.png", 0.8f);
+        auto* sprite = ButtonSprite::create(text, "bigFont.fnt", "GJ_button_02.png", 0.8f);
         sprite->setScale(scale);
         return CCMenuItemSpriteExtra::create(sprite, this, handler);
     }
 
 protected:
     bool init() {
-        if (!Popup::init(380.f, 310.f)) {
+        if (!Popup::init(380.f, 310.f, "GJ_square04.png")) {
             return false;
         }
+        m_bgSprite->setColor({ 255, 195, 235 });
         this->setTitle("Basu Input Buffer");
+        if (m_title) {
+            m_title->setColor(SOFT_PINK);
+        }
+        addFloaters();
+
+        // hearts around the title
+        for (float side : { -1.f, 1.f }) {
+            auto* h = heart(0.32f, PINK);
+            h->setRotation(side * 15.f);
+            m_mainLayer->addChildAtPosition(h, Anchor::Top, { side * 118.f, -20.f });
+            pulse(h, 0.32f);
+            auto* sp = CCSprite::create("sparkle.png"_spr);
+            sp->setScale(0.25f);
+            sp->setColor(SOFT_PINK);
+            m_mainLayer->addChildAtPosition(sp, Anchor::Top, { side * 134.f, -10.f });
+            sp->runAction(CCRepeatForever::create(CCRotateBy::create(3.f, side * 360.f)));
+        }
+
+        // your own icon, with a little heart
+        auto* gm = GameManager::get();
+        auto* icon = SimplePlayer::create(gm->getPlayerFrame());
+        icon->updatePlayerFrame(gm->getPlayerFrame(), IconType::Cube);
+        icon->setColor(gm->colorForIdx(gm->getPlayerColor()));
+        icon->setSecondColor(gm->colorForIdx(gm->getPlayerColor2()));
+        icon->setScale(0.7f);
+        m_mainLayer->addChildAtPosition(icon, Anchor::TopLeft, { 34.f, -30.f });
+        icon->runAction(CCRepeatForever::create(CCSequence::create(CCEaseSineInOut::create(CCMoveBy::create(0.8f, { 0.f, 3.f })),
+            CCEaseSineInOut::create(CCMoveBy::create(0.8f, { 0.f, -3.f })), nullptr)));
+        auto* iconHeart = heart(0.2f, PINK);
+        m_mainLayer->addChildAtPosition(iconHeart, Anchor::TopLeft, { 52.f, -16.f });
+        pulse(iconHeart, 0.2f);
 
         // stage row
         auto* prev = CCMenuItemSpriteExtra::create(CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png"), this,
@@ -2635,12 +2719,13 @@ protected:
             label->setAnchorPoint({ 0.f, 0.5f });
             label->limitLabelWidth(140.f, 0.38f, 0.2f);
             m_mainLayer->addChildAtPosition(label, Anchor::Top, at + CCPoint { 16.f, 0.f });
+            m_labels.push_back(label);
         }
 
         // status + shortcuts
         m_status = CCLabelBMFont::create("", "chatFont.fnt");
         m_status->setScale(0.55f);
-        m_status->setColor({ 180, 210, 255 });
+        m_status->setColor(LILAC);
         m_mainLayer->addChildAtPosition(m_status, Anchor::Bottom, { 0.f, 56.f });
         m_buttonMenu->addChildAtPosition(textButton("All settings", menu_selector(BufferMenu::onAllSettings)), Anchor::Bottom,
             { -110.f, 26.f });
@@ -2691,7 +2776,7 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
 class $modify(BufPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
-        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", "GJ_button_01.png", 0.8f);
+        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", "GJ_button_02.png", 0.8f);
         sprite->setScale(0.6f);
         auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(BufPauseLayer::onBufferMenu));
         auto* menu = CCMenu::create();
@@ -2723,7 +2808,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.49 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.50 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

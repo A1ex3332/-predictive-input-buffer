@@ -46,3 +46,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.45 ball: short flips count as landings, landings must last 8 ticks, spam guard for fast flipping; menu switch.
 - v2.46 watermark (always on, not configurable): 'Basu Input Buffer | stage' in the level while the buffer is on, and 'Basu Input Buffer was on' on the level complete screen if it was on during the attempt.
 - v2.49: ghost no longer touches collision blocks (could break collision triggers); spam guard sends waiting inputs instead of dropping them (lost clicks broke click/event triggers).
+- v2.50: cuter menu: pink theme, pulsing hearts, floating hearts and sparkles, your own icon in the corner; switches turn pink when on.
