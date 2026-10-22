@@ -304,7 +304,7 @@ namespace {
         if (starts("drift")) return { 255, 240, 150 };
         if (starts("ghost killed") || starts("  hitbox")) return { 255, 120, 120 };
         if (starts("perf")) return { 150, 200, 255 };
-        if (starts("F6") || starts("v2") || starts("path") || starts("Click")) return { 255, 215, 90 };
+        if (starts("F6") || starts("v2") || starts("path") || starts("Click") || starts("CBF")) return { 255, 215, 90 };
         if (starts("pass")) return { 140, 150, 170 };
         if (starts("memory")) return { 255, 150, 220 };
         if (starts("console")) return { 150, 255, 200 };
@@ -479,6 +479,11 @@ namespace {
             buf.showPath, buf.perfLog, buf.deathLog, buf.ignoreTouching);
         text += fmt::format("explain inputs {} | low latency {} | cbf sync {}{}\n", buf.explain, buf.lowLatency, buf.cbfSync,
             Loader::get()->isModLoaded("syzzi.click_between_frames") ? " (CBF loaded)" : "");
+        // v2.39: CBF Extrapolate only changes what's drawn (a hidden player run ahead to "now"),
+        // never the real player's physics, so predictions aren't affected by it.
+        if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
+            text += "CBF Extrapolate loaded (visual only)\n";
+        }
         text += "----\n";
         for (auto const& line : exportLines) {
             text += line;
@@ -2341,7 +2346,10 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
     }
-    say("v2.38 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
+        say("CBF Extrapolate detected: visual only, predictions unaffected");
+    }
+    say("v2.39 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
