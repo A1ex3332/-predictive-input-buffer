@@ -27,6 +27,8 @@
 #include <Geode/modify/EndLevelLayer.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/ui/Popup.hpp>
+#include <Geode/ui/Notification.hpp>
+#include <map>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Windows.h>
 #include <algorithm>
@@ -232,6 +234,12 @@ namespace {
         std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
         bool moreTime = true;        // v2.43: at spots you keep dying, delay to give you more time
         bool ballSmart = true;       // v2.45: ball landing rules + spam guard
+        bool swingSmart = true;      // v2.51: swing "could you have flipped back" scoring + spam guard
+        bool train = false;          // v2.51: training mode: predict, never delay, show how early you were
+        bool perLevel = true;        // v2.51: stage + switches remembered per level
+        bool heatmap = true;         // v2.51: death marks on the progress bar
+        CCLabelBMFont* hintLabel = nullptr;  // v2.51: training hint ("2t early")
+        CCDrawNode* heatNode = nullptr;      // v2.51: death marks on the progress bar
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
         int retapAt = -1;            // v2.15: ticks after the input at which the ghost taps again (-1 = never)
@@ -413,6 +421,10 @@ namespace {
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.ufoSmart = mod->getSettingValue<bool>("ufo-smart");
         buf.ballSmart = mod->getSettingValue<bool>("ball-smart");
+        buf.swingSmart = mod->getSettingValue<bool>("swing-smart");
+        buf.train = mod->getSettingValue<bool>("training-mode");
+        buf.perLevel = mod->getSettingValue<bool>("per-level-settings");
+        buf.heatmap = mod->getSettingValue<bool>("death-heatmap");
         buf.moreTime = mod->getSettingValue<bool>("more-time-death-spots");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
@@ -527,8 +539,8 @@ namespace {
         if (!buf.enabled) {
             return "Buffer: OFF";
         }
-        return fmt::format("Buffer{}: {:g}f / wave {:g}f", STAGES[buf.stage].custom ? " (custom)" : "", buf.ticksAll * TICK,
-            buf.ticksWave * TICK);
+        return fmt::format("Buffer{}: {:g}f / wave {:g}f{}", STAGES[buf.stage].custom ? " (custom)" : "", buf.ticksAll * TICK,
+            buf.ticksWave * TICK, buf.train ? " [training]" : "");
     }
 
     void dropGhosts() {
@@ -1273,6 +1285,11 @@ namespace {
         int tick = 0;
         bool died = false;
         bool safe = false;
+        // v2.51 ceilings: a jump under a block bumps into it and comes down after a few ticks,
+        // far sooner than the 6 air ticks a landing needed, so those jumps never counted as
+        // landed and every click under a ceiling looked like a crash further on.
+        double prevVy = buf.ghost1->m_yVelocity;
+        bool bumped = false;
 
         collectMovers();
         for (; tick < total; ++tick) {
@@ -1368,6 +1385,11 @@ namespace {
             }
 
             bool grounded = buf.ghost1->m_isOnGround && (!second || buf.ghost2->m_isOnGround);
+            double vy = buf.ghost1->m_yVelocity;
+            if (airTicks > 0 && std::abs(prevVy - vy) > 3.0) {
+                bumped = true;  // stopped dead in the air: hit something above
+            }
+            prevVy = vy;
             if (!grounded) {
                 ++airTicks;
                 groundTicks = 0;
@@ -1384,7 +1406,7 @@ namespace {
                 }
                 continue;
             }
-            if (airTicks < st(ballRun ? 2 : 6)) {
+            if (airTicks < st(ballRun || bumped ? 2 : 6)) {
                 continue;
             }
             if (groundTicks > st(ballRun ? 8 : 2)) {
@@ -1942,6 +1964,232 @@ namespace {
         buf.queue.push_back({ ticks, down });
     }
 
+    // v2.51 practice stats: every save (or, in training, every input that would have been
+    // saved) is how early you were, in 240/s ticks.
+    struct Stats {
+        int saves = 0;
+        int earlySum = 0;
+        int attempts = 0;            // attempts that had at least one save
+        std::map<int, int> savesAt;  // level percent -> saves there
+    };
+    Stats attemptStats;
+    Stats sessionStats;
+    std::string statsKey;
+
+    void noteSave(PlayLayer* layer, int ticks) {
+        int t = static_cast<int>(std::lround(ticks / stepScale()));
+        int pct = std::clamp(static_cast<int>(layer->getCurrentPercent()), 0, 100);
+        for (auto* s : { &attemptStats, &sessionStats }) {
+            ++s->saves;
+            s->earlySum += t;
+            ++s->savesAt[pct];
+        }
+    }
+
+    std::string attemptSummary() {
+        auto const& a = attemptStats;
+        return fmt::format("{} {} | avg {:.1f}t ({:.2f}f) early", a.saves, buf.train ? (a.saves == 1 ? "early click" : "early clicks")
+            : (a.saves == 1 ? "save" : "saves"), static_cast<double>(a.earlySum) / a.saves, a.earlySum * TICK / a.saves);
+    }
+
+    // At the end of an attempt (death, restart or level complete).
+    void endAttempt(bool notify) {
+        if (attemptStats.saves > 0) {
+            ++sessionStats.attempts;
+            say("attempt: {}", attemptSummary());
+            if (notify) {
+                geode::Notification::create(attemptSummary(), geode::NotificationIcon::Info, 1.5f)->show();
+            }
+        }
+        attemptStats = {};
+    }
+
+    // v2.51 training mode: the input goes through untouched, and you're told how early it was.
+    bool trainInstead(PlayLayer* layer, int ticks, bool down, char const* what) {
+        if (!buf.train) {
+            return false;
+        }
+        noteSave(layer, ticks);
+        say("TRAIN {} {}: {}t ({:g}f) early", what, down ? "press" : "release", ticks, ticks * TICK);
+        if (buf.hintLabel) {
+            buf.hintLabel->setString(fmt::format("{} {:g}f early", down ? "click" : "release", ticks * TICK).c_str());
+            buf.hintLabel->stopAllActions();
+            buf.hintLabel->setOpacity(230);
+            buf.hintLabel->setScale(0.5f);
+            buf.hintLabel->runAction(CCSequence::create(CCEaseBackOut::create(CCScaleTo::create(0.12f, 0.6f)), CCDelayTime::create(0.5f),
+                CCFadeOut::create(0.4f), nullptr));
+        }
+        return true;
+    }
+
+    // v2.51 per-level settings: your stage and switches are remembered for each level and
+    // come back when you open it again. Outside a level (and in levels you haven't changed
+    // anything in) the normal settings apply.
+    constexpr char const* PROFILE_KEYS[] = { "low-latency", "robust-saves", "orb-align", "orb-timing", "level-memory",
+        "more-time-death-spots", "ship-buffer", "ufo-smart", "ball-smart", "swing-smart", "cbf-sync", "predict-moving-objects",
+        "training-mode" };
+
+    struct Globals {
+        bool have = false;
+        int stage = 0;
+        std::vector<bool> values;
+    } globals;
+
+    std::string profileKey() {
+        return memoryKey.empty() ? std::string() : "profile-" + memoryKey;
+    }
+
+    void saveProfile() {
+        if (!buf.perLevel || profileKey().empty() || !globals.have) {
+            return;
+        }
+        auto v = matjson::Value::object();
+        v["stage"] = buf.stage;
+        for (auto* key : PROFILE_KEYS) {
+            v[key] = Mod::get()->getSettingValue<bool>(key);
+        }
+        Mod::get()->setSavedValue(profileKey(), v);
+    }
+
+    void restoreGlobals() {
+        if (!globals.have) {
+            return;
+        }
+        auto* mod = Mod::get();
+        for (size_t i = 0; i < std::size(PROFILE_KEYS); ++i) {
+            mod->setSettingValue<bool>(PROFILE_KEYS[i], globals.values[i]);
+        }
+        buf.stage = globals.stage;
+        globals = {};
+        mod->setSavedValue("profile-globals", matjson::Value(nullptr));
+        readSettings();
+        applyStage();
+    }
+
+    void loadProfile() {
+        if (!buf.perLevel || profileKey().empty()) {
+            return;
+        }
+        auto* mod = Mod::get();
+        globals.have = true;
+        globals.stage = buf.stage;
+        globals.values.clear();
+        auto backup = matjson::Value::object();
+        backup["stage"] = buf.stage;
+        for (auto* key : PROFILE_KEYS) {
+            bool value = mod->getSettingValue<bool>(key);
+            globals.values.push_back(value);
+            backup[key] = value;
+        }
+        // kept until the level is left, so a crash mid-level can't leave level settings behind
+        mod->setSavedValue("profile-globals", backup);
+        if (!mod->hasSavedValue(profileKey())) {
+            return;
+        }
+        auto v = mod->getSavedValue<matjson::Value>(profileKey());
+        if (!v.isObject()) {
+            return;
+        }
+        buf.stage = std::clamp(static_cast<int>(v["stage"].asInt().unwrapOr(buf.stage)), 0, STAGE_COUNT - 1);
+        for (auto* key : PROFILE_KEYS) {
+            if (v.contains(key)) {
+                mod->setSettingValue<bool>(key, v[key].asBool().unwrapOr(mod->getSettingValue<bool>(key)));
+            }
+        }
+        readSettings();
+        applyStage();
+        say("level settings loaded: {}", stageText());
+    }
+
+    // Settings a crash left behind are put back when the game starts.
+    void recoverGlobals() {
+        auto* mod = Mod::get();
+        if (!mod->hasSavedValue("profile-globals")) {
+            return;
+        }
+        auto v = mod->getSavedValue<matjson::Value>("profile-globals");
+        if (!v.isObject()) {
+            return;
+        }
+        for (auto* key : PROFILE_KEYS) {
+            if (v.contains(key)) {
+                mod->setSettingValue<bool>(key, v[key].asBool().unwrapOr(mod->getSettingValue<bool>(key)));
+            }
+        }
+        buf.stage = std::clamp(static_cast<int>(v["stage"].asInt().unwrapOr(0)), 0, STAGE_COUNT - 1);
+        mod->setSavedValue("profile-globals", matjson::Value(nullptr));
+    }
+
+    // v2.51 death heatmap: red marks on the progress bar where level memory saw you die,
+    // brighter where you die more.
+    void refreshHeatmap() {
+        auto* layer = GameManager::get()->m_playLayer;
+        if (!buf.heatNode || !layer || !layer->m_progressBar) {
+            return;
+        }
+        buf.heatNode->clear();
+        float length = layer->m_levelLength;
+        if (!buf.heatmap || length <= 0.f) {
+            return;
+        }
+        auto size = layer->m_progressBar->getContentSize();
+        uint32_t most = 0;
+        for (auto const& [slice, spot] : memory) {
+            most = std::max(most, spot.deaths);
+        }
+        if (most == 0) {
+            return;
+        }
+        for (auto const& [slice, spot] : memory) {
+            if (spot.deaths == 0) {
+                continue;
+            }
+            float pct = std::clamp((slice + 0.5f) * SLICE / length, 0.f, 1.f);
+            float x = 2.f + pct * (size.width - 4.f);
+            float heat = static_cast<float>(spot.deaths) / most;
+            buf.heatNode->drawSegment({ x, 2.f }, { x, size.height - 2.f }, 0.7f, { 1.f, 0.35f + 0.3f * (1.f - heat), 0.55f, 0.35f + 0.6f * heat });
+        }
+    }
+
+    // v2.51 stats popup text
+    std::string statsText() {
+        auto const& s = sessionStats;
+        std::string text;
+        if (s.saves == 0) {
+            text += "No early clicks yet this session.\n";
+        }
+        else {
+            text += fmt::format("<cp>{}</c> {} in <cp>{}</c> attempts, on average <cp>{:.1f}t</c> ({:.2f}f) early.\n",
+                s.saves, buf.train ? "early clicks" : "saves", s.attempts, static_cast<double>(s.earlySum) / s.saves, s.earlySum * TICK / s.saves);
+            std::vector<std::pair<int, int>> spots(s.savesAt.begin(), s.savesAt.end());
+            std::sort(spots.begin(), spots.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+            text += "Most early clicks at:";
+            for (size_t i = 0; i < std::min<size_t>(3, spots.size()); ++i) {
+                text += fmt::format(" <cy>{}%</c> ({}x)", spots[i].first, spots[i].second);
+            }
+            text += "\n";
+        }
+        auto* layer = GameManager::get()->m_playLayer;
+        if (layer && layer->m_levelLength > 0.f) {
+            std::map<int, uint32_t> deathsAt;
+            for (auto const& [slice, spot] : memory) {
+                if (spot.deaths > 0) {
+                    deathsAt[std::clamp(static_cast<int>((slice + 0.5f) * SLICE / layer->m_levelLength * 100.f), 0, 100)] += spot.deaths;
+                }
+            }
+            std::vector<std::pair<int, uint32_t>> spots(deathsAt.begin(), deathsAt.end());
+            std::sort(spots.begin(), spots.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+            if (!spots.empty()) {
+                text += "Most deaths at:";
+                for (size_t i = 0; i < std::min<size_t>(3, spots.size()); ++i) {
+                    text += fmt::format(" <cr>{}%</c> ({}x)", spots[i].first, spots[i].second);
+                }
+                text += "\n";
+            }
+        }
+        return text;
+    }
+
     bool intercept(GJBaseGameLayer* self, bool down, bool isPlayer1) {
         auto* layer = GameManager::get()->m_playLayer;
         if (!layer) {
@@ -2032,7 +2280,9 @@ namespace {
         buf.sinceInput = 0;
         bool anyUfo = p1->m_isBird || (p2 && p2->m_isBird);
         bool anyBall = p1->m_isBall || (p2 && p2->m_isBall);
-        if ((anyWave || anyShip || (anyUfo && buf.ufoSmart) || (anyBall && buf.ballSmart)) && buf.rapid >= SPAM_STREAK) {
+        bool anySwing = p1->m_isSwing || (p2 && p2->m_isSwing);
+        if ((anyWave || anyShip || (anyUfo && buf.ufoSmart) || (anyBall && buf.ballSmart) || (anySwing && buf.swingSmart)) &&
+            buf.rapid >= SPAM_STREAK) {
             if (buf.explain) {
                 say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid, spamGap);
             }
@@ -2147,8 +2397,14 @@ namespace {
         if (down && !anyWave && !anyShip && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
             int orbLanded = 0;
             int k = memorySaysSkip(sliceOf(p1)) ? 0 : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded);
+            if (k > 0 && trainInstead(layer, k, down, "orb")) {
+                decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+                buf.appliedInput = down;
+                return false;
+            }
             if (k > 0) {
                 say("ORB {} +{}t ({:g}f) -> {}t", buf.orbWasTiming ? "timing" : "press", k, k * TICK, orbLanded);
+                noteSave(layer, k);
                 decided(layer, p1, p2, dual, k, down, horizon, releaseAfter);
                 buf.shift = k;
                 queueInput(k - early, down);
@@ -2164,6 +2420,10 @@ namespace {
         bool anySpider = p1->m_isSpider || (p2 && p2->m_isSpider);
         bool spiderPress = down && anySpider && !anyWave && !robotPress && buf.spiderSmart;
         bool ufoPress = down && anyUfo && !anyWave && !anyShip && buf.ufoSmart;  // v2.40
+        // v2.51 swing: one flip, then nothing for the whole look-ahead, crashes into what your
+        // next flip would have avoided. Scored like the UFO: could one more flip have saved it?
+        bool swingPress = down && anySwing && !anyWave && !anyShip && !ufoPress && buf.swingSmart;
+        ufoPress = ufoPress || swingPress;
         bool shipInput = anyShip && !anyWave;  // v2.25: press or release, both steer the ship
         buf.captureKiller = true;
         buf.killerSeen = false;
@@ -2226,7 +2486,8 @@ namespace {
                         bestCrash = crashAt;
                     }
                 }
-                if (bestK > 0) {
+                if (bestK > 0 && !buf.train) {
+                    noteSave(layer, bestK);
                     say("MORE TIME {}{} +{}t: crash t{} -> {} (died here {}x)", down ? "press" : "release", tickTag, bestK, crash0,
                         bestCrash < 0 ? std::string("none") : fmt::format("t{}", bestCrash), spotAround(sliceOf(p1)).deaths);
                     decided(layer, p1, p2, dual, bestK, down, horizon, releaseAfter);
@@ -2373,9 +2634,15 @@ namespace {
             return false;
         }
 
+        if (trainInstead(layer, saved, down, swingPress ? "swing" : "")) {
+            decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            buf.appliedInput = down;
+            return false;
+        }
         if (robotPress) {
             releaseAfter = robotUsedHold;  // the path view / drift check show the hold that works
         }
+        noteSave(layer, saved);
         say("SAVED {}{} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", tickTag, saved, saved * TICK, base, landed, maxDelay,
             robustNote ? std::string("  (robust)")
             : fromMemory ? std::string("  (memory)")
@@ -2398,6 +2665,7 @@ namespace {
         }
         applyStage();
         readSettings();
+        saveProfile();
         say("F6 -> {}", stageText());
         refreshAutoTag();
         refreshWatermark();
@@ -2531,9 +2799,12 @@ class BufferMenu : public geode::Popup {
         { "ship-buffer", "Ship buffering" },
         { "ufo-smart", "Smart UFO" },
         { "ball-smart", "Smart ball" },
+        { "swing-smart", "Smart swing" },
         { "cbf-sync", "CBF sync" },
         { "predict-moving-objects", "Predict moving objects" },
         { nullptr, "Path view (F10)" },
+        { "training-mode", "Training (hints only)" },
+        { "death-heatmap", "Death heatmap" },
         { "explain-inputs", "Explain inputs (debug)" },
     };
 
@@ -2610,6 +2881,9 @@ class BufferMenu : public geode::Popup {
         if (o.key) {
             Mod::get()->setSettingValue<bool>(o.key, value);
             readSettings();
+            saveProfile();
+            refreshHeatmap();
+            refreshWatermark();
         }
         else {
             buf.showPath = value;
@@ -2634,11 +2908,16 @@ class BufferMenu : public geode::Popup {
         exportConsole();
     }
 
+    void onStats(CCObject*) {
+        FLAlertLayer::create("Practice stats", statsText(), "OK")->show();
+    }
+
     void onForget(CCObject*) {
         memory.clear();
         pending.active = false;
         memoryDirty = true;
         saveMemory();
+        refreshHeatmap();
         say("memory for this level cleared");
         refresh();
     }
@@ -2651,7 +2930,7 @@ class BufferMenu : public geode::Popup {
 
 protected:
     bool init() {
-        if (!Popup::init(380.f, 310.f, "GJ_square04.png")) {
+        if (!Popup::init(380.f, 340.f, "GJ_square04.png")) {
             return false;
         }
         m_bgSprite->setColor({ 255, 195, 235 });
@@ -2706,7 +2985,7 @@ protected:
         m_mainLayer->addChildAtPosition(m_stage, Anchor::Top, { 0.f, -52.f });
 
         // switches, two columns
-        constexpr int ROWS = 7;
+        constexpr int ROWS = 8;
         for (int i = 0; i < static_cast<int>(std::size(OPTIONS)); ++i) {
             int col = i / ROWS;
             int row = i % ROWS;
@@ -2727,11 +3006,13 @@ protected:
         m_status->setScale(0.55f);
         m_status->setColor(LILAC);
         m_mainLayer->addChildAtPosition(m_status, Anchor::Bottom, { 0.f, 56.f });
-        m_buttonMenu->addChildAtPosition(textButton("All settings", menu_selector(BufferMenu::onAllSettings)), Anchor::Bottom,
-            { -110.f, 26.f });
-        m_buttonMenu->addChildAtPosition(textButton("Copy log", menu_selector(BufferMenu::onCopyLog)), Anchor::Bottom, { 0.f, 26.f });
-        m_buttonMenu->addChildAtPosition(textButton("Forget level", menu_selector(BufferMenu::onForget)), Anchor::Bottom,
-            { 110.f, 26.f });
+        m_buttonMenu->addChildAtPosition(textButton("Settings", menu_selector(BufferMenu::onAllSettings), 0.55f), Anchor::Bottom,
+            { -132.f, 26.f });
+        m_buttonMenu->addChildAtPosition(textButton("Stats", menu_selector(BufferMenu::onStats), 0.55f), Anchor::Bottom, { -45.f, 26.f });
+        m_buttonMenu->addChildAtPosition(textButton("Copy log", menu_selector(BufferMenu::onCopyLog), 0.55f), Anchor::Bottom,
+            { 37.f, 26.f });
+        m_buttonMenu->addChildAtPosition(textButton("Forget", menu_selector(BufferMenu::onForget), 0.55f), Anchor::Bottom,
+            { 124.f, 26.f });
 
         refresh();
         return true;
@@ -2770,6 +3051,16 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
         label->setAnchorPoint({ 1.f, 1.f });
         label->setPosition({ win.width - 6.f, win.height - 4.f });
         this->addChild(label, 100);
+        if (attemptStats.saves > 0) {
+            auto* stats = CCLabelBMFont::create(attemptSummary().c_str(), "bigFont.fnt");
+            stats->setScale(0.28f);
+            stats->setColor({ 255, 190, 225 });
+            stats->setOpacity(170);
+            stats->setAnchorPoint({ 1.f, 1.f });
+            stats->setPosition({ win.width - 6.f, win.height - 16.f });
+            this->addChild(stats, 100);
+        }
+        endAttempt(false);
     }
 };
 
@@ -2794,6 +3085,7 @@ class $modify(BufPauseLayer, PauseLayer) {
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
     buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
+    recoverGlobals();
     readSettings();
     applyStage();
     if (buf.console) {
@@ -2808,7 +3100,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.50 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.51 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2854,6 +3146,8 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.rapid = 0;
         forgetPress();
         memoryDeath();
+        refreshHeatmap();
+        endAttempt(true);
         finishDrift(" (died)");
     }
 
@@ -2867,6 +3161,12 @@ class $modify(BufPlayLayer, PlayLayer) {
         exportLines.clear();
         logClock = 0;
         loadMemory(level);
+        if (statsKey != memoryKey) {
+            statsKey = memoryKey;
+            sessionStats = {};
+        }
+        attemptStats = {};
+        loadProfile();
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
         buf.ghostLayerBase = buf.ghostLayer->getChildrenCount();
@@ -2969,6 +3269,20 @@ class $modify(BufPlayLayer, PlayLayer) {
         this->addChild(buf.autoTag);
         refreshAutoTag();
 
+        buf.hintLabel = CCLabelBMFont::create("", "bigFont.fnt");
+        buf.hintLabel->setColor({ 255, 170, 215 });
+        buf.hintLabel->setOpacity(0);
+        buf.hintLabel->setPosition({ win.width / 2.f, win.height - 40.f });
+        buf.hintLabel->setZOrder(1000);
+        this->addChild(buf.hintLabel);
+
+        buf.heatNode = nullptr;
+        if (m_progressBar) {
+            buf.heatNode = CCDrawNode::create();
+            m_progressBar->addChild(buf.heatNode, 5);
+            refreshHeatmap();
+        }
+
         // Path view lives in the object layer, so it scrolls with the level.
         buf.pathNode = CCDrawNode::create();
         // v2.48: above the level's shader effects when it has that layer; inside the shader
@@ -2986,12 +3300,16 @@ class $modify(BufPlayLayer, PlayLayer) {
 
     void onQuit() {
         saveMemory();
+        restoreGlobals();
+        buf.hintLabel = nullptr;
+        buf.heatNode = nullptr;
         memoryKey.clear();
         dropGhosts();
         PlayLayer::onQuit();
     }
 
     void resetLevel() {
+        endAttempt(false);
         buf.usedThisAttempt = false;
         resetPending();
         forgetPress();

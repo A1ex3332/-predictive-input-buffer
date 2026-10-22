@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.50.0",
+	"version": "v2.51.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -293,6 +293,30 @@
 			"type": "bool",
 			"name": "Ball: smart flips",
 			"description": "Ball flips that land after only a few ticks (tight corridors) count as landings, a flip is only called safe after rolling 8 ticks on the new surface (spikes right after the landing spot), and fast flipping goes straight through (spam guard).",
+			"default": true
+		},
+		"swing-smart": {
+			"type": "bool",
+			"name": "Swing: smart flips",
+			"description": "A swing flip counts as safe if one more flip in time would have saved it (like the UFO), and fast flipping goes straight through (spam guard).",
+			"default": true
+		},
+		"training-mode": {
+			"type": "bool",
+			"name": "Training mode (hints only)",
+			"description": "The buffer still predicts every input but never delays it. When an input would have been saved, a hint shows how early you were (e.g. 'click 0.5f early'), so you learn the timing yourself.",
+			"default": false
+		},
+		"per-level-settings": {
+			"type": "bool",
+			"name": "Per-level settings",
+			"description": "Your stage (F6) and the menu switches are remembered for each level and come back when you open it again.",
+			"default": true
+		},
+		"death-heatmap": {
+			"type": "bool",
+			"name": "Death heatmap",
+			"description": "Red marks on the progress bar where level memory saw you die; brighter = more deaths.",
 			"default": true
 		}
 	},
