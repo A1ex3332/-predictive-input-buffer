@@ -27,7 +27,6 @@
 #include <Geode/modify/EndLevelLayer.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/ui/Popup.hpp>
-#include <Geode/ui/Notification.hpp>
 #include <map>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Windows.h>
@@ -1993,13 +1992,11 @@ namespace {
     }
 
     // At the end of an attempt (death, restart or level complete).
-    void endAttempt(bool notify) {
+    // v2.52: logged to the console only (no popup after a death)
+    void endAttempt() {
         if (attemptStats.saves > 0) {
             ++sessionStats.attempts;
             say("attempt: {}", attemptSummary());
-            if (notify) {
-                geode::Notification::create(attemptSummary(), geode::NotificationIcon::Info, 1.5f)->show();
-            }
         }
         attemptStats = {};
     }
@@ -3060,7 +3057,7 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
             stats->setPosition({ win.width - 6.f, win.height - 16.f });
             this->addChild(stats, 100);
         }
-        endAttempt(false);
+        endAttempt();
     }
 };
 
@@ -3100,7 +3097,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.51 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.52 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -3147,7 +3144,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         forgetPress();
         memoryDeath();
         refreshHeatmap();
-        endAttempt(true);
+        endAttempt();
         finishDrift(" (died)");
     }
 
@@ -3309,7 +3306,7 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void resetLevel() {
-        endAttempt(false);
+        endAttempt();
         buf.usedThisAttempt = false;
         resetPending();
         forgetPress();
