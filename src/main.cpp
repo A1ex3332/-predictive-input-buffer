@@ -2202,7 +2202,9 @@ namespace {
 
         auto* level = layer->m_level;
         bool twoPlayer = level && level->m_twoPlayerMode;
-        if (twoPlayer && !isPlayer1) {
+        // v2.55: a P2-side input in a two-player level only steers Player 2 while dual mode is
+        // on; before that it moves Player 1 (Relief's wave parts), so it's buffered like a P1 input.
+        if (twoPlayer && !isPlayer1 && layer->m_gameState.m_isDualMode) {
             return false;
         }
         // In two-player levels P2 is someone else: never simulate P1's input on it.
@@ -3123,7 +3125,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.54 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.55 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
