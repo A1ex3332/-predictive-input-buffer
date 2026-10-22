@@ -6,8 +6,8 @@
 	"version": "v2.51.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
-	"developer": "lilWC",
-	"description": "Trajectory-based input buffer: delays early clicks/releases by up to 8+ frames, with orb, pad and portal-aware prediction.",
+	"developer": "BASU",
+	"description": "Trajectory-based input buffer: delays early clicks/releases by up to 8+ frames, with orb, pad and portal-aware prediction. github.com/raresdalas1009/-predictive-input-buffer",
 	"settings": {
 		"custom-ticks": {
 			"type": "int",
@@ -324,5 +324,8 @@
 		"sprites": [
 			"resources/*.png"
 		]
+	},
+	"links": {
+		"source": "https://github.com/raresdalas1009/-predictive-input-buffer"
 	}
 }
