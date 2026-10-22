@@ -40,3 +40,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.37: position read from the per-step node position (CBF sync actually active now, drift check / path view / memory slices correct; memory restarts per level).
 - v2.39: CBF Extrapolate is detected and shown in the console/export (it's visual only; predictions are unaffected).
 - v2.40 UFO: crashes you could have flapped away from count as safe, landing counts as safe, smallest delay wins, spam guard for fast flapping.
+- v2.41 FPS: moving-object tracking drops far objects and keeps a short moving-now list (was checking up to 4096 objects every step and every prediction).

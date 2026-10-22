@@ -829,11 +829,30 @@ namespace {
         }
     }
 
+    // v2.41: objects that moved on the last step, so predictions don't have to search the
+    // whole watch list for them.
+    std::vector<GameObject*> movingNow;
+
     void updateWatched() {
         if (watched.size() > WATCH_LIMIT) {
             watched.clear();
         }
-        for (auto& [object, w] : watched) {
+        movingNow.clear();
+        // v2.41: objects far from you (passed long ago, or far ahead) are dropped instead of
+        // being checked every step; predictions never reach further than ~300 units.
+        double px = 0.0;
+        bool prune = false;
+        if (auto* layer = GameManager::get()->m_playLayer; layer && layer->m_player1) {
+            px = layer->m_player1->getPosition().x;
+            prune = true;
+        }
+        for (auto it = watched.begin(); it != watched.end();) {
+            auto* object = it->first;
+            auto& w = it->second;
+            if (prune && std::abs(object->m_positionX - px) > 800.0) {
+                it = watched.erase(it);
+                continue;
+            }
             if (object->m_positionX != w.x || object->m_positionY != w.y) {
                 // called every step, so the change is the movement per step
                 w.vx = object->m_positionX - w.x;
@@ -841,10 +860,12 @@ namespace {
                 w.x = object->m_positionX;
                 w.y = object->m_positionY;
                 w.movedTick = tickCount;
+                movingNow.push_back(object);
             }
             else if (tickCount - w.movedTick > 1) {
                 w.vx = w.vy = 0.0;  // stopped
             }
+            ++it;
         }
     }
 
@@ -863,7 +884,12 @@ namespace {
         if (!buf.predictMovers) {
             return;
         }
-        for (auto const& [object, w] : watched) {
+        for (auto* object : movingNow) {
+            auto it = watched.find(object);
+            if (it == watched.end()) {
+                continue;
+            }
+            auto const& w = it->second;
             if ((w.vx != 0.0 || w.vy != 0.0) && tickCount - w.movedTick <= 1) {
                 movers.push_back({ object, object->m_positionX, object->m_positionY, w.vx, w.vy });
             }
@@ -2394,7 +2420,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.40 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.41 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2898,7 +2924,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                 // Decided on the first ticks and kept by object, so a spike that follows you
                 // stays ignored even when "predict moving objects" moves it along.
                 if (buf.haveRealRect && (bit & HAZARD_TYPES)) {
-                    if (buf.harmless.contains(object)) {
+                    if (!buf.harmless.empty() && buf.harmless.contains(object)) {
                         continue;
                     }
                     if (buf.simTick <= 1) {
