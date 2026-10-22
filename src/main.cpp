@@ -237,6 +237,7 @@ namespace {
         bool train = false;          // v2.51: training mode: predict, never delay, show how early you were
         bool perLevel = true;        // v2.51: stage + switches remembered per level
         bool heatmap = true;         // v2.51: death marks on the progress bar
+        bool saveDing = true;        // v2.56: ding when a click is saved
         CCLabelBMFont* hintLabel = nullptr;  // v2.51: training hint ("2t early")
         CCDrawNode* heatNode = nullptr;      // v2.51: death marks on the progress bar
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
@@ -424,6 +425,7 @@ namespace {
         buf.train = mod->getSettingValue<bool>("training-mode");
         buf.perLevel = mod->getSettingValue<bool>("per-level-settings");
         buf.heatmap = mod->getSettingValue<bool>("death-heatmap");
+        buf.saveDing = mod->getSettingValue<bool>("save-ding");
         buf.moreTime = mod->getSettingValue<bool>("more-time-death-spots");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
@@ -1990,6 +1992,10 @@ namespace {
             s->earlySum += t;
             ++s->savesAt[pct];
         }
+        // v2.56: a ding for every real save (training mode shows its hint instead)
+        if (buf.saveDing && !buf.train) {
+            FMODAudioEngine::sharedEngine()->playEffect("counter003.ogg");
+        }
     }
 
     std::string attemptSummary() {
@@ -2830,6 +2836,7 @@ class BufferMenu : public geode::Popup {
         { nullptr, "Path view (F10)" },
         { "training-mode", "Training (hints only)" },
         { "death-heatmap", "Death heatmap" },
+        { "save-ding", "Ding on save" },
         { "explain-inputs", "Explain inputs (debug)" },
     };
 
@@ -2955,7 +2962,7 @@ class BufferMenu : public geode::Popup {
 
 protected:
     bool init() {
-        if (!Popup::init(380.f, 340.f, "GJ_square04.png")) {
+        if (!Popup::init(380.f, 364.f, "GJ_square04.png")) {
             return false;
         }
         m_bgSprite->setColor({ 255, 195, 235 });
@@ -3010,7 +3017,7 @@ protected:
         m_mainLayer->addChildAtPosition(m_stage, Anchor::Top, { 0.f, -52.f });
 
         // switches, two columns
-        constexpr int ROWS = 8;
+        constexpr int ROWS = 9;
         for (int i = 0; i < static_cast<int>(std::size(OPTIONS)); ++i) {
             int col = i / ROWS;
             int row = i % ROWS;
@@ -3044,6 +3051,17 @@ protected:
     }
 
 public:
+    // v2.56: the menu opens at 78% size (the popup's own pop-in animation scales it back to
+    // 100%, so it's re-run with the smaller target)
+    void show() override {
+        Popup::show();
+        m_mainLayer->stopAllActions();
+        m_mainLayer->setScale(0.1f);
+        m_mainLayer->runAction(CCEaseElasticOut::create(CCScaleTo::create(0.5f, MENU_SCALE), 0.6f));
+    }
+
+    static constexpr float MENU_SCALE = 0.78f;
+
     static BufferMenu* create() {
         auto* ret = new BufferMenu();
         if (ret->init()) {
@@ -3125,7 +3143,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.55 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.56 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

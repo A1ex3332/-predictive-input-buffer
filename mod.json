@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.55.0",
+	"version": "v2.56.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -317,6 +317,12 @@
 			"type": "bool",
 			"name": "Death heatmap",
 			"description": "Red marks on the progress bar where level memory saw you die; brighter = more deaths.",
+			"default": true
+		},
+		"save-ding": {
+			"type": "bool",
+			"name": "Ding on save",
+			"description": "Plays a short ding every time the buffer saves one of your clicks.",
 			"default": true
 		}
 	},
