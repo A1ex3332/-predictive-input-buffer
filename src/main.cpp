@@ -2041,16 +2041,15 @@ namespace {
         return true;
     }
 
-    // v2.51 per-level settings: your stage and switches are remembered for each level and
+    // v2.51 per-level settings: your switches (v2.59: not the stage, not low latency) are remembered for each level and
     // come back when you open it again. Outside a level (and in levels you haven't changed
     // anything in) the normal settings apply.
-    constexpr char const* PROFILE_KEYS[] = { "low-latency", "robust-saves", "orb-align", "orb-timing", "level-memory",
+    constexpr char const* PROFILE_KEYS[] = { "robust-saves", "orb-align", "orb-timing", "level-memory",
         "more-time-death-spots", "ship-buffer", "ufo-smart", "ball-smart", "swing-smart", "cbf-sync", "predict-moving-objects",
         "training-mode" };
 
     struct Globals {
         bool have = false;
-        int stage = 0;
         std::vector<bool> values;
     } globals;
 
@@ -2063,7 +2062,6 @@ namespace {
             return;
         }
         auto v = matjson::Value::object();
-        v["stage"] = buf.stage;
         for (auto* key : PROFILE_KEYS) {
             v[key] = Mod::get()->getSettingValue<bool>(key);
         }
@@ -2078,7 +2076,6 @@ namespace {
         for (size_t i = 0; i < std::size(PROFILE_KEYS); ++i) {
             mod->setSettingValue<bool>(PROFILE_KEYS[i], globals.values[i]);
         }
-        buf.stage = globals.stage;
         globals = {};
         mod->setSavedValue("profile-globals", matjson::Value(nullptr));
         readSettings();
@@ -2091,10 +2088,8 @@ namespace {
         }
         auto* mod = Mod::get();
         globals.have = true;
-        globals.stage = buf.stage;
         globals.values.clear();
         auto backup = matjson::Value::object();
-        backup["stage"] = buf.stage;
         for (auto* key : PROFILE_KEYS) {
             bool value = mod->getSettingValue<bool>(key);
             globals.values.push_back(value);
@@ -2109,7 +2104,6 @@ namespace {
         if (!v.isObject()) {
             return;
         }
-        buf.stage = std::clamp(static_cast<int>(v["stage"].asInt().unwrapOr(buf.stage)), 0, STAGE_COUNT - 1);
         for (auto* key : PROFILE_KEYS) {
             if (v.contains(key)) {
                 mod->setSettingValue<bool>(key, v[key].asBool().unwrapOr(mod->getSettingValue<bool>(key)));
@@ -2135,7 +2129,6 @@ namespace {
                 mod->setSettingValue<bool>(key, v[key].asBool().unwrapOr(mod->getSettingValue<bool>(key)));
             }
         }
-        buf.stage = std::clamp(static_cast<int>(v["stage"].asInt().unwrapOr(0)), 0, STAGE_COUNT - 1);
         mod->setSavedValue("profile-globals", matjson::Value(nullptr));
     }
 
@@ -2696,6 +2689,8 @@ namespace {
 
     void cycleStage(int dir = 1) {
         buf.stage = (buf.stage + dir + STAGE_COUNT) % STAGE_COUNT;
+        // v2.59: the stage is one setting for every level and survives restarts
+        Mod::get()->setSavedValue("stage", buf.stage);
         resetPending();
         // A delayed input that was waiting is dropped; the game gets what you're really
         // holding now (otherwise, with the buffer switched off, it never would).
@@ -3138,6 +3133,12 @@ $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
     buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
     recoverGlobals();
+    buf.stage = std::clamp(static_cast<int>(Mod::get()->getSavedValue<int64_t>("stage", 0)), 0, STAGE_COUNT - 1);
+    // v2.59: low latency is on for every level (switched on once for existing installs too)
+    if (!Mod::get()->getSavedValue<bool>("low-latency-v259", false)) {
+        Mod::get()->setSettingValue<bool>("low-latency", true);
+        Mod::get()->setSavedValue("low-latency-v259", true);
+    }
     readSettings();
     applyStage();
     if (buf.console) {
@@ -3152,7 +3153,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.58 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.59 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

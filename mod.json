@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.58.0",
+	"version": "v2.59.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -267,7 +267,7 @@
 			"type": "bool",
 			"name": "Low latency mode",
 			"description": "For players who feel the buffer as lag or delayed clicks: clicks made while a delay is waiting are not shifted after it (no chain of delayed clicks), delays are at most 1 frame, searches are capped at 3 ms (no frame hitches), and robust saves / wave margin (which can add a tick) are off.",
-			"default": false
+			"default": true
 		},
 		"ufo-smart": {
 			"type": "bool",
@@ -310,7 +310,7 @@
 		"per-level-settings": {
 			"type": "bool",
 			"name": "Per-level settings",
-			"description": "Your stage (F6) and the menu switches are remembered for each level and come back when you open it again.",
+			"description": "The menu switches are remembered for each level and come back when you open it again. The stage (F6) and low latency are the same for every level.",
 			"default": true
 		},
 		"death-heatmap": {
