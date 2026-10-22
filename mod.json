@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.59.0",
+	"version": "v2.60.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -267,7 +267,7 @@
 			"type": "bool",
 			"name": "Low latency mode",
 			"description": "For players who feel the buffer as lag or delayed clicks: clicks made while a delay is waiting are not shifted after it (no chain of delayed clicks), delays are at most 1 frame, searches are capped at 3 ms (no frame hitches), and robust saves / wave margin (which can add a tick) are off.",
-			"default": true
+			"default": false
 		},
 		"ufo-smart": {
 			"type": "bool",
