@@ -1594,7 +1594,6 @@ namespace {
                     }
                 }
             }
-        }
             // v2.42 explain: "+k:ret o" = press k ticks later lives ret ticks and used the orb
             // ("-" = missed it); a pick needs to use the orb and live at least as long as now.
             if (buf.explain) {
