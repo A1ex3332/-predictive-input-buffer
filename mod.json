@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.44.0",
+	"version": "v2.45.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -288,6 +288,12 @@
 			"default": 6,
 			"min": 2,
 			"max": 40
+		},
+		"ball-smart": {
+			"type": "bool",
+			"name": "Ball: smart flips",
+			"description": "Ball flips that land after only a few ticks (tight corridors) count as landings, a flip is only called safe after rolling 8 ticks on the new surface (spikes right after the landing spot), and fast flipping goes straight through (spam guard).",
+			"default": true
 		}
 	}
 }

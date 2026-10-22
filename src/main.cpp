@@ -228,6 +228,7 @@ namespace {
         bool autoDash = false;       // v2.16: the current auto-release ended a dash
         std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
         bool moreTime = true;        // v2.43: at spots you keep dying, delay to give you more time
+        bool ballSmart = true;       // v2.45: ball landing rules + spam guard
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
         int retapAt = -1;            // v2.15: ticks after the input at which the ghost taps again (-1 = never)
@@ -406,6 +407,7 @@ namespace {
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.ufoSmart = mod->getSettingValue<bool>("ufo-smart");
+        buf.ballSmart = mod->getSettingValue<bool>("ball-smart");
         buf.moreTime = mod->getSettingValue<bool>("more-time-death-spots");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
@@ -1244,6 +1246,10 @@ namespace {
         bool spiderRun = buf.spiderSmart && (p1->m_isSpider || (second && p2->m_isSpider));
         // v2.40: a UFO that lands on something has finished its flap, like a cube jump
         bool ufoRun = buf.ufoSmart && (p1->m_isBird || (second && p2->m_isBird));
+        // v2.45 ball: a flip in a tight corridor can land after only a few ticks, and a ball
+        // often lands right next to a spike on the new surface, so short flips count as
+        // landings and the landing has to last longer before the flip is called safe.
+        bool ballRun = buf.ballSmart && (p1->m_isBall || (second && p2->m_isBall));
         int total = delay + horizon;
         int survived = 0;
         int airTicks = 0;
@@ -1362,10 +1368,10 @@ namespace {
                 }
                 continue;
             }
-            if (airTicks < st(6)) {
+            if (airTicks < st(ballRun ? 2 : 6)) {
                 continue;
             }
-            if (groundTicks > st(2)) {
+            if (groundTicks > st(ballRun ? 8 : 2)) {
                 safe = true;
                 break;
             }
@@ -2009,7 +2015,8 @@ namespace {
         }
         buf.sinceInput = 0;
         bool anyUfo = p1->m_isBird || (p2 && p2->m_isBird);
-        if ((anyWave || anyShip || (anyUfo && buf.ufoSmart)) && buf.rapid >= SPAM_STREAK) {
+        bool anyBall = p1->m_isBall || (p2 && p2->m_isBall);
+        if ((anyWave || anyShip || (anyUfo && buf.ufoSmart) || (anyBall && buf.ballSmart)) && buf.rapid >= SPAM_STREAK) {
             if (buf.explain) {
                 say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid, spamGap);
             }
@@ -2492,6 +2499,7 @@ class BufferMenu : public geode::Popup {
         { "more-time-death-spots", "More time (death spots)" },
         { "ship-buffer", "Ship buffering" },
         { "ufo-smart", "Smart UFO" },
+        { "ball-smart", "Smart ball" },
         { "cbf-sync", "CBF sync" },
         { "predict-moving-objects", "Predict moving objects" },
         { nullptr, "Path view (F10)" },
@@ -2560,7 +2568,7 @@ class BufferMenu : public geode::Popup {
 
 protected:
     bool init() {
-        if (!Popup::init(380.f, 280.f)) {
+        if (!Popup::init(380.f, 310.f)) {
             return false;
         }
         this->setTitle("Basu Input Buffer");
@@ -2583,11 +2591,11 @@ protected:
         m_mainLayer->addChildAtPosition(m_stage, Anchor::Top, { 0.f, -52.f });
 
         // switches, two columns
-        constexpr int ROWS = 6;
+        constexpr int ROWS = 7;
         for (int i = 0; i < static_cast<int>(std::size(OPTIONS)); ++i) {
             int col = i / ROWS;
             int row = i % ROWS;
-            CCPoint at { col == 0 ? -165.f : 15.f, -88.f - row * 26.f };
+            CCPoint at { col == 0 ? -165.f : 15.f, -86.f - row * 24.f };
             auto* toggler = CCMenuItemToggler::createWithStandardSprites(this, menu_selector(BufferMenu::onToggle), 0.55f);
             toggler->setTag(i);
             toggler->toggle(optionValue(OPTIONS[i]));
@@ -2666,7 +2674,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.44 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.45 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
