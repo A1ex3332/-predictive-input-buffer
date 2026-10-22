@@ -298,7 +298,7 @@ namespace {
     ccColor3B lineColor(std::string const& line) {
         auto starts = [&](char const* prefix) { return line.rfind(prefix, 0) == 0; };
         if (starts("SAVED")) return { 120, 255, 140 };
-        if (starts("ORB")) return { 90, 220, 255 };
+        if (starts("ORB") || starts("orb")) return { 90, 220, 255 };
         if (starts("AUTO")) return { 200, 150, 255 };
         if (starts("no save")) return { 175, 175, 190 };
         if (starts("skip") || starts("prediction budget")) return { 255, 180, 80 };
@@ -1536,17 +1536,22 @@ namespace {
         simulate(layer, p1, p2, dual, 0, true, window + 2, -1, window + 2, &end);
         buf.skipPress = false;
         int touch = buf.firstOrbTick;
+        std::string trace;  // v2.42: what was tried, for the explain log
 
         if (touch >= 0 && touch <= window) {
             // 2. Pressing now already uses an orb (e.g. held into it).
             int now = simulate(layer, p1, p2, dual, 0, true, horizon, releaseAfter, horizon, &end);
-            if (buf.orbUsedTick >= 0 && now < horizon && buf.orbTiming) {
+            bool nowUses = buf.orbUsedTick >= 0;
+            if (nowUses && now < horizon && buf.orbTiming) {
                 // v2.26: ...but crashes. Where in the orb you click changes where it sends
                 // you, so try clicking 1 to 6 ticks later, still inside the orb; the run
                 // that lives longest (and clearly longer than now) wins.
                 int bestRet = -1;
                 for (int k = 1; k <= std::min(window, st(6)); ++k) {
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
+                    if (buf.explain) {
+                        trace += fmt::format(" +{}:{}{}", k, ret, buf.orbUsedTick >= 0 ? "o" : "-");
+                    }
                     if (end == SimEnd::StopSearch) {
                         break;
                     }
@@ -1562,7 +1567,7 @@ namespace {
                     }
                 }
             }
-            else if (buf.orbUsedTick < 0) {
+            else if (!nowUses) {
                 // 3. Every delay while you're inside the orb whose press really uses it and
                 //    doesn't crash sooner than missing it would. v2.16: the one that lives
                 //    longest wins (earliest on a tie), instead of simply the first that hits
@@ -1570,6 +1575,9 @@ namespace {
                 int bestRet = -1;
                 for (int k = std::max(1, touch - 1); k <= std::min(window, touch + st(6)); ++k) {
                     int ret = simulate(layer, p1, p2, dual, k, true, horizon, releaseAfter, horizon, &end);
+                    if (buf.explain) {
+                        trace += fmt::format(" +{}:{}{}", k, ret, buf.orbUsedTick >= 0 ? "o" : "-");
+                    }
                     if (end == SimEnd::StopSearch) {
                         break;
                     }
@@ -1585,6 +1593,13 @@ namespace {
                         break;  // fully safe: a later tick can't beat it
                     }
                 }
+            }
+        }
+            // v2.42 explain: "+k:ret o" = press k ticks later lives ret ticks and used the orb
+            // ("-" = missed it); a pick needs to use the orb and live at least as long as now.
+            if (buf.explain) {
+                say("orb: touch at t{}, press now {} -> {}t |{} => {}", touch, nowUses ? "uses it" : "misses it", now,
+                    trace.empty() ? " (nothing to try)" : trace, found > 0 ? fmt::format("+{}t", found) : std::string("no pick"));
             }
         }
         buf.orbClick = buf.assumeOrbs;
@@ -2070,6 +2085,20 @@ namespace {
 
         // On the ground a press is a jump; only move it onto an orb if the setting says so.
         bool grounded = p1->m_isOnGround && (!p2 || p2->m_isOnGround);
+        if (buf.explain && down && grounded && !buf.orbAlignGround && !anyWave && !anyShip && buf.orbAlign && buf.smart) {
+            // v2.42: is there an orb right ahead that this ground jump could have been moved onto?
+            SimEnd probeEnd;
+            buf.skipPress = true;
+            buf.orbClick = false;
+            int window = st(std::clamp(buf.orbWindow, 1, 64));
+            simulate(layer, p1, p2, dual, 0, true, window + 2, -1, window + 2, &probeEnd);
+            buf.skipPress = false;
+            buf.orbClick = buf.assumeOrbs;
+            if (buf.firstOrbTick >= 0 && buf.firstOrbTick <= window) {
+                say("orb: you'd touch an orb at t{}, but this press is from the ground ('also from the ground' is off)",
+                    buf.firstOrbTick);
+            }
+        }
         if (down && !anyWave && !anyShip && buf.orbAlign && buf.smart && (!grounded || buf.orbAlignGround)) {
             int orbLanded = 0;
             int k = memorySaysSkip(sliceOf(p1)) ? 0 : alignOrb(layer, p1, p2, dual, horizon, releaseAfter, memoryDelay(sliceOf(p1)), &orbLanded);
@@ -2420,7 +2449,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.41 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.42 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
