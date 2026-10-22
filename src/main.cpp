@@ -1955,7 +1955,8 @@ namespace {
         bool robustNote = false;
         if (buf.robustSaves && !(anyWave && buf.waveV46)) {
             int target = std::min(horizon, base + st(12));
-            float shift = std::max(0.3f, std::abs(p1->m_playerSpeed) * 0.5f);  // ~half a tick of x movement
+            // half a tick of x movement: normal speed (0.9) covers 311.58 units a second
+            float shift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
             auto robust = [&](int k) {
                 for (float off : { shift, -shift }) {
                     buf.ghostShiftX = off;
