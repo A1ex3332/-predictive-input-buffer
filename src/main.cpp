@@ -2713,7 +2713,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.47 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.48 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2876,7 +2876,9 @@ class $modify(BufPlayLayer, PlayLayer) {
 
         // Path view lives in the object layer, so it scrolls with the level.
         buf.pathNode = CCDrawNode::create();
-        m_objectLayer->addChild(buf.pathNode, 9999);
+        // v2.48: above the level's shader effects when it has that layer; inside the shader
+        // layer, dark or glow shaders could hide the path completely.
+        (m_aboveShaderObjectLayer ? m_aboveShaderObjectLayer : m_objectLayer)->addChild(buf.pathNode, 9999);
 
         buf.realInput = false;
         buf.appliedInput = false;
