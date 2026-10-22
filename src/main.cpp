@@ -57,6 +57,8 @@ namespace {
     constexpr uint64_t COLLIDING_TYPES = typeBit(GameObjectType::Solid) | typeBit(GameObjectType::Hazard) | typeBit(GameObjectType::Slope) |
                                          typeBit(GameObjectType::CollisionObject) | typeBit(GameObjectType::AnimatedHazard);
 
+    constexpr uint64_t HAZARD_TYPES = typeBit(GameObjectType::Hazard) | typeBit(GameObjectType::AnimatedHazard);
+
     // Objects the ghost may also interact with when smart prediction is on.
     constexpr uint64_t INTERACT_TYPES =
         typeBit(GameObjectType::YellowJumpPad) | typeBit(GameObjectType::PinkJumpPad) | typeBit(GameObjectType::RedJumpPad) |
@@ -189,6 +191,9 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool ignoreTouching = true;  // v2.31: hazards you touch right now without dying can't kill the ghost
+        bool haveRealRect = false;
+        CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
         bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
         bool killerSeen = false;
         int killerTick = -1;
@@ -387,6 +392,7 @@ namespace {
         buf.shipBuffer = mod->getSettingValue<bool>("ship-buffer");
         buf.lateCrash = static_cast<int>(mod->getSettingValue<int64_t>("cube-late-crash"));
         buf.robustSaves = mod->getSettingValue<bool>("robust-saves");
+        buf.ignoreTouching = mod->getSettingValue<bool>("ignore-touching-hazards");
         buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
         buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
@@ -1131,6 +1137,11 @@ namespace {
         buf.orbUsedTick = -1;
 
         bool second = dual && buf.ghost2 && p2;
+        buf.haveRealRect = buf.ignoreTouching;
+        if (buf.haveRealRect) {
+            buf.realRect1 = p1->getObjectRect();
+            buf.realRect2 = second ? p2->getObjectRect() : buf.realRect1;
+        }
         copyState(buf.ghost1, p1);
         if (second) {
             copyState(buf.ghost2, p2);
@@ -2231,7 +2242,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.30 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.31 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2703,6 +2714,16 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             auto type = static_cast<unsigned>(object->m_objectType);
             uint64_t bit = type < 64 ? (1ull << type) : 0;
             if (keep & bit) {
+                // v2.31: a hazard you're touching right now while alive is one the game doesn't
+                // let kill you (a spike made to follow the player, noclip...). Seen in GRIEF:
+                // a spike always sitting exactly on the player killed every wave prediction on
+                // its first tick.
+                if (buf.haveRealRect && (bit & HAZARD_TYPES)) {
+                    auto const& r = object->getObjectRect();
+                    if (r.intersectsRect(buf.realRect1) || r.intersectsRect(buf.realRect2)) {
+                        continue;
+                    }
+                }
                 relevant.push_back(object);
                 if (buf.trackMovers && (COLLIDING_TYPES & bit)) {
                     watchObject(object);
