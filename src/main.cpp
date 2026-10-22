@@ -189,6 +189,8 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool robustSaves = true;     // v2.28: a save must also survive with you slightly off
+        float ghostShiftX = 0.f;     // v2.28: horizontal offset applied to the ghost's start
         int lateCrash = 90;          // v2.27: cube / ball crashes after this many ticks aren't this click's (0 = off)
         bool predictMovers = false;  // v2.27: move objects along their current motion during predictions
         bool shipBuffer = false;     // v2.25: buffer ship inputs too
@@ -366,6 +368,7 @@ namespace {
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
         buf.shipBuffer = mod->getSettingValue<bool>("ship-buffer");
         buf.lateCrash = static_cast<int>(mod->getSettingValue<int64_t>("cube-late-crash"));
+        buf.robustSaves = mod->getSettingValue<bool>("robust-saves");
         buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
         buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
@@ -503,6 +506,14 @@ namespace {
         ghost->m_playerSpeed = real->m_playerSpeed;
         ghost->m_isDashing = real->m_isDashing;
         ghost->m_lastActivatedPortal = real->m_lastActivatedPortal;
+        if (buf.ghostShiftX != 0.f) {
+            // v2.28 robustness check: start the ghost a little ahead of / behind you, the way a
+            // real run is a fraction of a tick off from the prediction.
+            CCPoint pos = real->getPosition();
+            pos.x += buf.ghostShiftX;
+            ghost->setPosition(pos);
+            ghost->m_position = pos;
+        }
 
         // Button / jump-buffer state. Without this the ghost keeps whatever button
         // state the PREVIOUS simulation left it in (usually "held"), so on some clicks
@@ -1894,15 +1905,20 @@ namespace {
         bool fromMemory = false;
         // v2.13 memory: the delay that worked here on earlier runs is tried first, so the
         // same gap gets the same save every time.
+        // The same judgement this mode's search uses, for a single delay.
+        auto scoreAt = [&](int k, int target, SimEnd* e) {
+            return cubeStyleWave ? waveScore(layer, p1, p2, dual, k, down, horizon, target, e)
+                 : robotPress    ? robotScore(layer, p1, p2, dual, k, horizon, target, e)
+                 : spiderPress   ? spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
+                 : shipInput     ? shipScore(layer, p1, p2, dual, k, down, horizon, target, e)
+                                 : simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, target, e);
+        };
+
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = std::min(horizon, base + st(12));
             SimEnd e;
-            int ret = cubeStyleWave ? waveScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
-                    : robotPress    ? robotScore(layer, p1, p2, dual, learned, horizon, target, &e)
-                    : spiderPress   ? spiderScore(layer, p1, p2, dual, learned, horizon, releaseAfter, target, &e)
-                    : shipInput     ? shipScore(layer, p1, p2, dual, learned, down, horizon, target, &e)
-                                    : simulateOrbs(layer, p1, p2, dual, learned, down, horizon, releaseAfter, target, &e);
+            int ret = scoreAt(learned, target, &e);
             if (ret >= target) {
                 saved = learned;
                 landed = ret;
@@ -1929,6 +1945,43 @@ namespace {
             buf.appliedInput = down;
             return false;
         }
+
+        // v2.28 robustness check. A save can work in the exact predicted conditions and still
+        // fail for real, because a real run is always a hair off (a fraction of a tick, a bit
+        // of float error). So the chosen delay must also survive with you starting slightly
+        // ahead of and behind where you are (half a tick of movement each way). If it only
+        // works at the exact spot, the next few delays are tried for one that survives all
+        // three; if none does, the original save is kept, so this never makes things worse.
+        bool robustNote = false;
+        if (buf.robustSaves && !(anyWave && buf.waveV46)) {
+            int target = std::min(horizon, base + st(12));
+            float shift = std::max(0.3f, std::abs(p1->m_playerSpeed) * 0.5f);  // ~half a tick of x movement
+            auto robust = [&](int k) {
+                for (float off : { shift, -shift }) {
+                    buf.ghostShiftX = off;
+                    SimEnd e;
+                    int ret = scoreAt(k, target, &e);
+                    buf.ghostShiftX = 0.f;
+                    if (ret < target) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            if (!robust(saved)) {
+                for (int k = saved + 1; k <= std::min(maxDelay, saved + st(3)); ++k) {
+                    SimEnd e;
+                    int ret = scoreAt(k, target, &e);
+                    if (ret >= target && robust(k)) {
+                        saved = k;
+                        landed = ret;
+                        robustNote = true;
+                        break;
+                    }
+                }
+            }
+        }
+
         if (buf.avoidMovers) {
             // One extra run of the chosen delay with the moving-object watch on. (Watching
             // in every search run made cube searches hit the time budget.)
@@ -1947,7 +2000,8 @@ namespace {
             releaseAfter = robotUsedHold;  // the path view / drift check show the hold that works
         }
         say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay,
-            fromMemory ? std::string("  (memory)")
+            robustNote ? std::string("  (robust)")
+            : fromMemory ? std::string("  (memory)")
             : cubeStyleWave && marginUsed ? std::string("  +margin")
             : robotPress ? fmt::format("  hold {}t", robotUsedHold) : std::string());
         decided(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
@@ -2093,7 +2147,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.27 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.28 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

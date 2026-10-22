@@ -32,3 +32,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.25 ship (opt-in): ship presses/releases buffered with recovery-aware scoring, own small max delay, feathering passes through.
 - v2.26 orb timing: presses already inside an orb are re-timed within the orb if that survives, learned orb timings are tried first, predictions try later clicks inside orbs.
 - v2.27: late cube/ball crashes skip the search; experimental moving-object prediction (straight-line motion).
+- v2.28 robust saves: each save is checked with the player slightly ahead/behind; fragile edge saves are swapped for a nearby delay that survives all three.

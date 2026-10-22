@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.27.1",
+	"version": "v2.28.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -232,6 +232,12 @@
 			"name": "Predict moving objects (experimental)",
 			"description": "Spikes and blocks near your path that are moving right now (move triggers) are moved along their current motion during predictions, so saves account for where they will be. Straight-line movement only. Turn 'Don't buffer near moving objects' off when using this.",
 			"default": false
+		},
+		"robust-saves": {
+			"type": "bool",
+			"name": "Robust saves",
+			"description": "Before a save is used, it is also tested with you slightly ahead of and behind your real position (about half a tick). Saves that only work at the exact spot are swapped for a nearby delay that survives all three, if there is one. Costs a few extra predictions per save, never per normal click.",
+			"default": true
 		}
 	}
 }
