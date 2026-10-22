@@ -2265,7 +2265,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.33 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.34 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2296,6 +2296,15 @@ class $modify(BufPlayLayer, PlayLayer) {
             }
             return;
         }
+        // v2.34: let the game (and noclip / other mods) decide first, and only reset if you
+        // really died. With noclip this is called every tick you're inside a spike; resetting
+        // before it marked the button released each tick, the next tick pressed it again to
+        // match you, and a held button turned into 100-200 clicks a second.
+        bool wasDead = player && player->m_isDead;
+        PlayLayer::destroyPlayer(player, object);
+        if (!player || wasDead || !player->m_isDead) {
+            return;
+        }
         resetPending();
         buf.appliedInput = false;
         buf.autoReleased = false;
@@ -2303,7 +2312,6 @@ class $modify(BufPlayLayer, PlayLayer) {
         forgetPress();
         memoryDeath();
         finishDrift(" (died)");
-        PlayLayer::destroyPlayer(player, object);
     }
 
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {

@@ -34,3 +34,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.27: late cube/ball crashes skip the search; experimental moving-object prediction (straight-line motion).
 - v2.28 robust saves: each save is checked with the player slightly ahead/behind; fragile edge saves are swapped for a nearby delay that survives all three.
 - v2.31: hazards overlapping you at the click (player-following spikes, noclip) are ignored by predictions.
+- v2.34: with noclip, being inside a spike no longer makes the mod re-press the held button every tick.
