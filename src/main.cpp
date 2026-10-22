@@ -1396,8 +1396,14 @@ namespace {
             }
 
             bool grounded = buf.ghost1->m_isOnGround && (!second || buf.ghost2->m_isOnGround);
+            // v2.58: only a stop while still in the air and still going up is a ceiling bump.
+            // v2.51 counted any big velocity change, so every normal landing (falling speed
+            // -> 0) and every orb also counted, which cut the 6 air ticks a landing needs to 2
+            // for all cube jumps: short hops and drops off ledges were called "landed, safe"
+            // before the obstacle after them was even reached.
             double vy = buf.ghost1->m_yVelocity;
-            if (airTicks > 0 && std::abs(prevVy - vy) > 3.0) {
+            double up = buf.ghost1->m_isUpsideDown ? -1.0 : 1.0;
+            if (!grounded && airTicks > 0 && prevVy * up > 3.0 && vy * up < 0.5) {
                 bumped = true;  // stopped dead in the air: hit something above
             }
             prevVy = vy;
@@ -3146,7 +3152,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.57 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.58 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -3213,6 +3219,9 @@ class $modify(BufPlayLayer, PlayLayer) {
         }
         attemptStats = {};
         loadProfile();
+        if (buf.saveDing) {
+            FMODAudioEngine::sharedEngine()->preloadEffect("counter003.ogg");  // v2.58: no hitch on the first ding
+        }
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
         buf.ghostLayerBase = buf.ghostLayer->getChildrenCount();
@@ -3346,6 +3355,9 @@ class $modify(BufPlayLayer, PlayLayer) {
 
     void onQuit() {
         saveMemory();
+        // v2.58: changes made in the settings popup during the level are kept for this level;
+        // before, leaving the level silently put the old values back.
+        saveProfile();
         restoreGlobals();
         buf.hintLabel = nullptr;
         buf.heatNode = nullptr;

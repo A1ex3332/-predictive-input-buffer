@@ -45,3 +45,4 @@ Practice use only; do not use for verified or leaderboard runs.
 - v2.55: in two-player levels, P2-side inputs made outside dual mode move Player 1, and are now buffered as P1 inputs (Relief's wave parts were predicted on the idle Player 2).
 - v2.56: ding when a click is saved (setting + menu switch, on by default); menu opens smaller (78%).
 - v2.57: watermark hidden in practice mode (always shown in normal mode while the buffer is on).
+- v2.58: fix v2.51 regression (every cube landing counted as a ceiling bump, so short hops were called safe too early); settings changed in the settings popup during a level are kept for that level; ding sound preloaded.
