@@ -1454,7 +1454,10 @@ namespace {
         }
         drift.path = recordRun(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
         drift.active = !drift.path.empty();
-        drift.index = -1;
+        // v2.38: a normal click is handled before the tick runs, so the first comparison is
+        // one update later. A mid-tick (CBF) click is handled inside the tick, so the ghost's
+        // first (partial) step ends at the very next tick start: compare from there.
+        drift.index = buf.firstStep < 1.f ? 0 : -1;
         drift.compared = 0;
         drift.maxErr = 0.f;
         drift.maxAt = 0;
@@ -2338,7 +2341,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
     }
-    say("v2.37 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.38 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
