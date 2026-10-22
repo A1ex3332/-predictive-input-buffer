@@ -896,7 +896,7 @@ namespace {
                 finishDrift("");
                 return;
             }
-            float err = ccpDistance(real->m_position, drift.path[drift.index]);
+            float err = ccpDistance(real->getPosition(), drift.path[drift.index]);
             if (err > drift.maxErr) {
                 drift.maxErr = err;
                 drift.maxAt = drift.index;
@@ -935,7 +935,7 @@ namespace {
     } pending;
 
     int sliceOf(PlayerObject* p) {
-        return static_cast<int>(std::floor(p->m_position.x / SLICE));
+        return static_cast<int>(std::floor(p->getPosition().x / SLICE));
     }
 
     // A spot plus its two neighbours: the same gap is never hit at exactly the same x.
@@ -955,7 +955,7 @@ namespace {
     }
 
     std::filesystem::path memoryFile() {
-        return Mod::get()->getSaveDir() / "memory" / (memoryKey + ".txt");
+        return Mod::get()->getSaveDir() / "memory" / (memoryKey + "_v2.txt");  // v2.37: slices keyed by the real position
     }
 
     size_t memorySpots() {
@@ -1285,7 +1285,7 @@ namespace {
                 break;
             }
             if (buf.recordPath) {
-                buf.recordPath->push_back(buf.ghost1->m_position);
+                buf.recordPath->push_back(buf.ghost1->getPosition());
             }
             if (buf.ghostHitPortal) {
                 safe = tick >= delay;
@@ -1875,7 +1875,7 @@ namespace {
         // is already the ghost's tick 1.
         float midTick = 0.f;
         if (buf.cbfSync && buf.inRealUpdate && p1 && std::abs(buf.tickDx) > 0.01f) {
-            midTick = std::clamp((p1->m_position.x - buf.tickStartX) / buf.tickDx, 0.f, 0.999f);
+            midTick = std::clamp((p1->getPosition().x - buf.tickStartX) / buf.tickDx, 0.f, 0.999f);
         }
         buf.firstStep = 1.f - midTick;
         struct FirstStepReset {
@@ -2338,7 +2338,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
     }
-    say("v2.36 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.37 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2605,13 +2605,15 @@ class $modify(BufPlayerObject, PlayerObject) {
 
         bool isP1 = layer && this == layer->m_player1;
         if (isP1) {
-            buf.tickStartX = m_position.x;
+            // v2.37: getPosition() is updated every physics step; PlayerObject::m_position lags
+            // behind, which kept CBF sync, the drift check, path view and memory slices off.
+            buf.tickStartX = getPosition().x;
             buf.inRealUpdate = true;
         }
         PlayerObject::update(dt);
         if (isP1) {
             buf.inRealUpdate = false;
-            float dx = m_position.x - buf.tickStartX;
+            float dx = getPosition().x - buf.tickStartX;
             if (std::abs(dx) > 0.01f) {
                 buf.tickDx = dx;
             }

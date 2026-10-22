@@ -37,3 +37,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.34: with noclip, being inside a spike no longer makes the mod re-press the held button every tick.
 - v2.35: Click Between Frames sync is back; low latency mode (no chained delays, max 1 frame, 3 ms searches).
 - v2.36 CBF: rest of a split tick is collision-checked like the game does; logs show where in the tick a CBF click landed (@0.43) and separate 'safe' from 'safe only if you react by tX'.
+- v2.37: position read from the per-step node position (CBF sync actually active now, drift check / path view / memory slices correct; memory restarts per level).
