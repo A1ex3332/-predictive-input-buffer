@@ -223,6 +223,7 @@ namespace {
         bool dashAutoRelease = false;  // v2.16: let go of a dash for you when it would crash
         bool autoDash = false;       // v2.16: the current auto-release ended a dash
         std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
+        bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
         int retapAt = -1;            // v2.15: ticks after the input at which the ghost taps again (-1 = never)
         bool robotSmart = true;      // v2.12: robot presses count as safe if some hold length survives
@@ -399,6 +400,7 @@ namespace {
         buf.learn = mod->getSettingValue<bool>("level-memory");
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
+        buf.ufoSmart = mod->getSettingValue<bool>("ufo-smart");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
         buf.shipBuffer = mod->getSettingValue<bool>("ship-buffer");
@@ -1207,6 +1209,8 @@ namespace {
 
         bool flying = isFlying(p1) || (dual && p2 && isFlying(p2));
         bool spiderRun = buf.spiderSmart && (p1->m_isSpider || (second && p2->m_isSpider));
+        // v2.40: a UFO that lands on something has finished its flap, like a cube jump
+        bool ufoRun = buf.ufoSmart && (p1->m_isBird || (second && p2->m_isBird));
         int total = delay + horizon;
         int survived = 0;
         int airTicks = 0;
@@ -1304,7 +1308,7 @@ namespace {
             if (survived >= stopAt) {
                 break;
             }
-            if (flying) {
+            if (flying && !ufoRun) {
                 continue;
             }
 
@@ -1727,6 +1731,40 @@ namespace {
         return ret;
     }
 
+    // v2.40 UFO scoring. One flap and then nothing falls for the whole look-ahead into
+    // whatever is below, which your next flap would have avoided. So if the run crashes,
+    // try one more flap 6 / 12 / 18 ticks before the crash; if that survives, you could have
+    // flapped, so the click counts as safe. Crashing up into something can't be fixed by
+    // flapping, so those stay real crashes.
+    constexpr int UFO_REFLAP[] = { 6, 12, 18 };
+
+    int ufoScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int releaseAfter, int target,
+        SimEnd* end) {
+        int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, releaseAfter, target, end);
+        if (ret >= target || *end == SimEnd::StopSearch) {
+            return ret;
+        }
+        for (int margin : UFO_REFLAP) {
+            int at = ret - st(margin);
+            if (at < st(4)) {
+                break;
+            }
+            int length = std::min(horizon, at + st(20));
+            buf.retapAt = at;
+            SimEnd e;
+            int reflapped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
+            buf.retapAt = -1;
+            if (reflapped >= length) {
+                if (buf.captureKiller && buf.baseEscape < 0) {
+                    buf.baseEscape = at;
+                    buf.baseCrash = ret;
+                }
+                return horizon;
+            }
+        }
+        return ret;
+    }
+
     bool marginUsed = false;  // the last wave save took the +1 tick safety margin
 
     int searchWave(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, int horizon, int maxDelay, int base,
@@ -1920,7 +1958,8 @@ namespace {
             buf.rapid = 0;
         }
         buf.sinceInput = 0;
-        if ((anyWave || anyShip) && buf.rapid >= SPAM_STREAK) {
+        bool anyUfo = p1->m_isBird || (p2 && p2->m_isBird);
+        if ((anyWave || anyShip || (anyUfo && buf.ufoSmart)) && buf.rapid >= SPAM_STREAK) {
             if (buf.explain) {
                 say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid,
                     st(std::clamp(buf.spamGap, 4, 40)));
@@ -2024,6 +2063,7 @@ namespace {
         bool robotPress = down && anyRobot && !anyWave && buf.robotSmart;
         bool anySpider = p1->m_isSpider || (p2 && p2->m_isSpider);
         bool spiderPress = down && anySpider && !anyWave && !robotPress && buf.spiderSmart;
+        bool ufoPress = down && anyUfo && !anyWave && !anyShip && buf.ufoSmart;  // v2.40
         bool shipInput = anyShip && !anyWave;  // v2.25: press or release, both steer the ship
         buf.captureKiller = true;
         buf.killerSeen = false;
@@ -2031,6 +2071,7 @@ namespace {
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                  : robotPress    ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
                  : spiderPress   ? spiderScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
+                 : ufoPress      ? ufoScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
                  : shipInput     ? shipScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
         buf.captureKiller = false;
@@ -2105,6 +2146,7 @@ namespace {
             return cubeStyleWave ? waveScore(layer, p1, p2, dual, k, down, horizon, target, e)
                  : robotPress    ? robotScore(layer, p1, p2, dual, k, horizon, target, e)
                  : spiderPress   ? spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
+                 : ufoPress      ? ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e)
                  : shipInput     ? shipScore(layer, p1, p2, dual, k, down, horizon, target, e)
                                  : simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, target, e);
         };
@@ -2130,6 +2172,9 @@ namespace {
                     })
                   : shipInput     ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return shipScore(layer, p1, p2, dual, k, down, horizon, target, e);
+                    })
+                  : ufoPress      ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                        return ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     })
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
         }
@@ -2349,7 +2394,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.39 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.40 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

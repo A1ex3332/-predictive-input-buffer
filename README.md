@@ -39,3 +39,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.36 CBF: rest of a split tick is collision-checked like the game does; logs show where in the tick a CBF click landed (@0.43) and separate 'safe' from 'safe only if you react by tX'.
 - v2.37: position read from the per-step node position (CBF sync actually active now, drift check / path view / memory slices correct; memory restarts per level).
 - v2.39: CBF Extrapolate is detected and shown in the console/export (it's visual only; predictions are unaffected).
+- v2.40 UFO: crashes you could have flapped away from count as safe, landing counts as safe, smallest delay wins, spam guard for fast flapping.
