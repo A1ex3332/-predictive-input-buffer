@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.43.1",
+	"version": "v2.44.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -202,14 +202,14 @@
 		"ship-buffer": {
 			"type": "bool",
 			"name": "Ship: buffer inputs",
-			"description": "Buffer ship presses and releases too. A crash only counts if you couldn't have recovered (the opposite input 8 / 16 / 24 ticks before it is tried), the smallest delay that clears wins, and fast feathering goes straight through (spam guard). Off = ship is never touched, like before.",
-			"default": false
+			"description": "Buffer ship presses and releases. A crash only counts if you couldn't have recovered (the opposite input 8 / 16 / 24 ticks before it is tried), the smallest delay that clears wins, and only very fast taps go straight through (ship spam gap). Off = ship is never touched.",
+			"default": true
 		},
 		"ship-max-delay": {
 			"type": "int",
 			"name": "Ship: max delay (ticks)",
 			"description": "Ship's own max delay, used instead of the F6 stage. Ship has momentum, so small delays are enough and big ones feel laggy. 4 ticks = 1 frame at 60fps.",
-			"default": 2,
+			"default": 4,
 			"min": 0,
 			"max": 16
 		},
@@ -280,6 +280,14 @@
 			"name": "More time at spots you keep dying",
 			"description": "At a spot where level memory has seen you die 2+ times, an input that is only safe if your next input comes in time (wave / ship / UFO / spider) gets the small delay that pushes the crash furthest away, so you have more time to react. Normal play elsewhere is not affected. Needs Level memory.",
 			"default": true
+		},
+		"ship-spam-gap": {
+			"type": "int",
+			"name": "Ship: spam gap (ticks)",
+			"description": "Ship is steered by feathering, so only taps closer together than this count as spam and go straight through. The normal spam gap (16) made almost every ship input spam, so ship was barely buffered. 4 ticks = 1 frame at 60fps.",
+			"default": 6,
+			"min": 2,
+			"max": 40
 		}
 	}
 }

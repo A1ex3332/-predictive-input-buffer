@@ -23,6 +23,9 @@
 #include <Geode/modify/HardStreak.hpp>
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/PauseLayer.hpp>
+#include <Geode/ui/GeodeUI.hpp>
+#include <Geode/ui/Popup.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Windows.h>
 #include <algorithm>
@@ -211,6 +214,7 @@ namespace {
         int lateCrash = 90;          // v2.27: cube / ball crashes after this many ticks aren't this click's (0 = off)
         bool predictMovers = false;  // v2.27: move objects along their current motion during predictions
         bool shipBuffer = false;     // v2.25: buffer ship inputs too
+        int shipSpamGap = 6;         // v2.44: ship feathering is normal control, only taps closer than this are spam
         int shipMaxDelay = 2;        // v2.25: ship's own max delay (240/s ticks)
         bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
         int simRuns = 0;             // v2.21: predictions run for the current click
@@ -422,6 +426,7 @@ namespace {
         }
         buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
         buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
+        buf.shipSpamGap = static_cast<int>(mod->getSettingValue<int64_t>("ship-spam-gap"));
         buf.cbfSync = mod->getSettingValue<bool>("cbf-sync");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
@@ -1993,7 +1998,10 @@ namespace {
         // with a buffered click never reached the streak and its taps got collapsed).
         // Once the streak is reached, anything still waiting is dropped and your inputs
         // go straight to the game until you pause for longer than the spam gap.
-        if (buf.sinceInput < st(std::clamp(buf.spamGap, 4, 40))) {
+        // v2.44: ship is steered by feathering, so it gets its own, much shorter spam gap;
+        // otherwise nearly every ship input counted as spam and was never buffered.
+        int spamGap = st(anyShip && !anyWave ? std::clamp(buf.shipSpamGap, 2, 40) : std::clamp(buf.spamGap, 4, 40));
+        if (buf.sinceInput < spamGap) {
             ++buf.rapid;
         }
         else {
@@ -2003,8 +2011,7 @@ namespace {
         bool anyUfo = p1->m_isBird || (p2 && p2->m_isBird);
         if ((anyWave || anyShip || (anyUfo && buf.ufoSmart)) && buf.rapid >= SPAM_STREAK) {
             if (buf.explain) {
-                say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid,
-                    st(std::clamp(buf.spamGap, 4, 40)));
+                say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid, spamGap);
             }
             resetPending();
             buf.appliedInput = down;
@@ -2343,8 +2350,8 @@ namespace {
         return true;
     }
 
-    void cycleStage() {
-        buf.stage = (buf.stage + 1) % STAGE_COUNT;
+    void cycleStage(int dir = 1) {
+        buf.stage = (buf.stage + dir + STAGE_COUNT) % STAGE_COUNT;
         resetPending();
         // A delayed input that was waiting is dropped; the game gets what you're really
         // holding now (otherwise, with the buffer switched off, it never would).
@@ -2469,6 +2476,179 @@ namespace {
     }
 }
 
+// v2.44 in-game menu: pause menu button or F7 in a level. Stage, the main switches,
+// status, and shortcuts to all settings / copy log / forget level.
+class BufferMenu : public geode::Popup {
+    struct Option {
+        char const* key;    // mod setting, or nullptr for the runtime path view
+        char const* label;
+    };
+    static constexpr Option OPTIONS[] = {
+        { "low-latency", "Low latency" },
+        { "robust-saves", "Robust saves" },
+        { "orb-align", "Orb alignment" },
+        { "orb-timing", "Orb timing" },
+        { "level-memory", "Level memory" },
+        { "more-time-death-spots", "More time (death spots)" },
+        { "ship-buffer", "Ship buffering" },
+        { "ufo-smart", "Smart UFO" },
+        { "cbf-sync", "CBF sync" },
+        { "predict-moving-objects", "Predict moving objects" },
+        { nullptr, "Path view (F10)" },
+        { "explain-inputs", "Explain inputs (debug)" },
+    };
+
+    CCLabelBMFont* m_stage = nullptr;
+    CCLabelBMFont* m_status = nullptr;
+
+    static bool optionValue(Option const& o) {
+        return o.key ? Mod::get()->getSettingValue<bool>(o.key) : buf.showPath;
+    }
+
+    void refresh() {
+        m_stage->setString(stageText().c_str());
+        m_stage->limitLabelWidth(200.f, 0.5f, 0.2f);
+        float dt = buf.tickLength > 0.001f ? buf.tickLength : TICK;
+        m_status->setString(fmt::format("physics {:.0f}/s  |  CBF {}  |  memory {} spots", 60.f / dt,
+            Loader::get()->isModLoaded("syzzi.click_between_frames") ? "on" : "off", memorySpots()).c_str());
+    }
+
+    void onToggle(CCObject* sender) {
+        auto const& o = OPTIONS[sender->getTag()];
+        bool value = !optionValue(o);
+        if (o.key) {
+            Mod::get()->setSettingValue<bool>(o.key, value);
+            readSettings();
+        }
+        else {
+            buf.showPath = value;
+            if (buf.pathNode) {
+                buf.pathNode->clear();
+            }
+        }
+        say("{} {}", o.label, value ? "on" : "off");
+        refresh();
+    }
+
+    void onStage(CCObject* sender) {
+        cycleStage(sender->getTag());
+        refresh();
+    }
+
+    void onAllSettings(CCObject*) {
+        geode::openSettingsPopup(Mod::get());
+    }
+
+    void onCopyLog(CCObject*) {
+        exportConsole();
+    }
+
+    void onForget(CCObject*) {
+        memory.clear();
+        pending.active = false;
+        memoryDirty = true;
+        saveMemory();
+        say("memory for this level cleared");
+        refresh();
+    }
+
+    CCMenuItemSpriteExtra* textButton(char const* text, SEL_MenuHandler handler, float scale = 0.6f) {
+        auto* sprite = ButtonSprite::create(text, "bigFont.fnt", "GJ_button_04.png", 0.8f);
+        sprite->setScale(scale);
+        return CCMenuItemSpriteExtra::create(sprite, this, handler);
+    }
+
+protected:
+    bool init() {
+        if (!Popup::init(380.f, 280.f)) {
+            return false;
+        }
+        this->setTitle("Basu Input Buffer");
+
+        // stage row
+        auto* prev = CCMenuItemSpriteExtra::create(CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png"), this,
+            menu_selector(BufferMenu::onStage));
+        prev->setTag(-1);
+        prev->setScale(0.6f);
+        prev->m_baseScale = 0.6f;
+        m_buttonMenu->addChildAtPosition(prev, Anchor::Top, { -130.f, -52.f });
+        auto* nextSprite = CCSprite::createWithSpriteFrameName("GJ_arrow_01_001.png");
+        nextSprite->setFlipX(true);
+        auto* next = CCMenuItemSpriteExtra::create(nextSprite, this, menu_selector(BufferMenu::onStage));
+        next->setTag(1);
+        next->setScale(0.6f);
+        next->m_baseScale = 0.6f;
+        m_buttonMenu->addChildAtPosition(next, Anchor::Top, { 130.f, -52.f });
+        m_stage = CCLabelBMFont::create("", "bigFont.fnt");
+        m_mainLayer->addChildAtPosition(m_stage, Anchor::Top, { 0.f, -52.f });
+
+        // switches, two columns
+        constexpr int ROWS = 6;
+        for (int i = 0; i < static_cast<int>(std::size(OPTIONS)); ++i) {
+            int col = i / ROWS;
+            int row = i % ROWS;
+            CCPoint at { col == 0 ? -165.f : 15.f, -88.f - row * 26.f };
+            auto* toggler = CCMenuItemToggler::createWithStandardSprites(this, menu_selector(BufferMenu::onToggle), 0.55f);
+            toggler->setTag(i);
+            toggler->toggle(optionValue(OPTIONS[i]));
+            m_buttonMenu->addChildAtPosition(toggler, Anchor::Top, at);
+            auto* label = CCLabelBMFont::create(OPTIONS[i].label, "bigFont.fnt");
+            label->setAnchorPoint({ 0.f, 0.5f });
+            label->limitLabelWidth(140.f, 0.38f, 0.2f);
+            m_mainLayer->addChildAtPosition(label, Anchor::Top, at + CCPoint { 16.f, 0.f });
+        }
+
+        // status + shortcuts
+        m_status = CCLabelBMFont::create("", "chatFont.fnt");
+        m_status->setScale(0.55f);
+        m_status->setColor({ 180, 210, 255 });
+        m_mainLayer->addChildAtPosition(m_status, Anchor::Bottom, { 0.f, 56.f });
+        m_buttonMenu->addChildAtPosition(textButton("All settings", menu_selector(BufferMenu::onAllSettings)), Anchor::Bottom,
+            { -110.f, 26.f });
+        m_buttonMenu->addChildAtPosition(textButton("Copy log", menu_selector(BufferMenu::onCopyLog)), Anchor::Bottom, { 0.f, 26.f });
+        m_buttonMenu->addChildAtPosition(textButton("Forget level", menu_selector(BufferMenu::onForget)), Anchor::Bottom,
+            { 110.f, 26.f });
+
+        refresh();
+        return true;
+    }
+
+public:
+    static BufferMenu* create() {
+        auto* ret = new BufferMenu();
+        if (ret->init()) {
+            ret->autorelease();
+            return ret;
+        }
+        delete ret;
+        return nullptr;
+    }
+
+    static void open() {
+        if (auto* menu = create()) {
+            menu->show();
+        }
+    }
+};
+
+class $modify(BufPauseLayer, PauseLayer) {
+    void customSetup() {
+        PauseLayer::customSetup();
+        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", "GJ_button_01.png", 0.8f);
+        sprite->setScale(0.6f);
+        auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(BufPauseLayer::onBufferMenu));
+        auto* menu = CCMenu::create();
+        menu->addChild(button);
+        auto win = CCDirector::get()->getWinSize();
+        menu->setPosition({ win.width - 50.f, 30.f });
+        this->addChild(menu, 10);
+    }
+
+    void onBufferMenu(CCObject*) {
+        BufferMenu::open();
+    }
+};
+
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
     buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
@@ -2486,7 +2666,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.43.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.44 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2616,7 +2796,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6 stage   F8 copy log   F9 console   F10 path   F11 forget", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6 stage  F7 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -2903,6 +3083,13 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
         if (isKeyDown && !isKeyRepeat && GameManager::get()->m_playLayer) {
             if (key == KEY_F6) {
                 cycleStage();
+            }
+            else if (key == KEY_F7) {
+                auto* layer = GameManager::get()->m_playLayer;
+                if (layer && !layer->m_isPaused) {
+                    layer->pauseGame(true);
+                }
+                BufferMenu::open();
             }
             else if (key == KEY_F9) {
                 buf.panelOpen = !buf.panelOpen;
