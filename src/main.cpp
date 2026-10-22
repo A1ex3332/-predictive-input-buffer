@@ -475,7 +475,10 @@ namespace {
         if (!buf.watermark) {
             return;
         }
-        buf.watermark->setVisible(buf.enabled);
+        // v2.57: hidden in practice mode (practice runs can't be submitted, and it crowded the
+        // checkpoint buttons); always shown in normal mode while the buffer is on.
+        auto* layer = GameManager::get()->m_playLayer;
+        buf.watermark->setVisible(buf.enabled && !(layer && layer->m_isPracticeMode));
         buf.watermark->setString(fmt::format("Click Before Frames  |  {}", stageText()).c_str());
     }
 
@@ -3143,7 +3146,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.56 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.57 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -3363,6 +3366,12 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.autoReleased = false;
         drift.active = false;
         PlayLayer::resetLevel();
+    }
+
+    void togglePracticeMode(bool practiceMode) {
+        PlayLayer::togglePracticeMode(practiceMode);
+        refreshWatermark();
+        refreshAutoTag();
     }
 
     void playEndAnimationToPos(CCPoint position) {
