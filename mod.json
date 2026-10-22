@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.31.0",
+	"version": "v2.32.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -244,6 +244,12 @@
 			"name": "Ignore hazards you're touching",
 			"description": "Spikes / saws that overlap you at the moment of the click while you're alive can't be what kills you (e.g. a spike the level makes follow the player, or noclip), so predictions ignore them. Fixes predictions that died on their very first tick (GRIEF's wave).",
 			"default": true
+		},
+		"death-log": {
+			"type": "bool",
+			"name": "Death log (debug)",
+			"description": "On every 'no save', log what killed the prediction ghost (object ID, type, where it is relative to you, hitboxes). Ghost deaths in the first 3 ticks are always logged. Use it with F8 when a level predicts badly.",
+			"default": false
 		}
 	}
 }

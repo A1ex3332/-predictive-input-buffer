@@ -195,6 +195,7 @@ namespace {
         bool haveRealRect = false;
         CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
         std::unordered_set<GameObject*> harmless;  // hazards on you at the start of this prediction
+        bool deathLog = false;       // v2.32: log what kills the press-now ghost on every no-save
         bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
         bool killerSeen = false;
         int killerTick = -1;
@@ -394,6 +395,7 @@ namespace {
         buf.lateCrash = static_cast<int>(mod->getSettingValue<int64_t>("cube-late-crash"));
         buf.robustSaves = mod->getSettingValue<bool>("robust-saves");
         buf.ignoreTouching = mod->getSettingValue<bool>("ignore-touching-hazards");
+        buf.deathLog = mod->getSettingValue<bool>("death-log");
         buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
         buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
@@ -452,7 +454,8 @@ namespace {
         text += fmt::format("auto-release: wave {} robot {} dash {} normal runs {} window {} | movers: avoid {} predict {}\n",
             buf.autoRelease, buf.robotAutoRelease, buf.dashAutoRelease, buf.autoNormalRuns, buf.autoWindow, buf.avoidMovers,
             buf.predictMovers);
-        text += fmt::format("debug: drift check {} | path view {} | perf log {}\n", buf.driftCheck, buf.showPath, buf.perfLog);
+        text += fmt::format("debug: drift check {} | path view {} | perf log {} | death log {} | ignore touching {}\n", buf.driftCheck,
+            buf.showPath, buf.perfLog, buf.deathLog, buf.ignoreTouching);
         text += "----\n";
         for (auto const& line : exportLines) {
             text += line;
@@ -1954,7 +1957,7 @@ namespace {
 
         // v2.30 diagnostics: a ghost that dies within a few ticks while you live means the
         // prediction doesn't match you there. Log what killed it and how both hitboxes compare.
-        if (buf.killerSeen && base <= st(3)) {
+        if (buf.killerSeen && (base <= st(3) || (buf.deathLog && base < horizon))) {
             auto real = p1->getObjectRect();
             auto const& g = buf.ghostDeathRect;
             if (buf.killerType >= 0) {
@@ -1966,8 +1969,9 @@ namespace {
             else {
                 say("ghost killed at t{} by no object (crushed / out of bounds / slope)", buf.killerTick);
             }
-            say("  hitbox ghost {:.1f}x{:.1f} vs you {:.1f}x{:.1f}, ghost moved dx {:.1f} dy {:.1f}", g.size.width, g.size.height,
-                real.size.width, real.size.height, g.getMidX() - real.getMidX(), g.getMidY() - real.getMidY());
+            say("  hitbox ghost {:.1f}x{:.1f} vs you {:.1f}x{:.1f}, ghost moved dx {:.1f} dy {:.1f}{}", g.size.width, g.size.height,
+                real.size.width, real.size.height, g.getMidX() - real.getMidX(), g.getMidY() - real.getMidY(),
+                buf.predictMovers ? " (moving objects predicted)" : "");
         }
 
         if (base >= horizon) {
@@ -2244,7 +2248,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.31 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.32 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
