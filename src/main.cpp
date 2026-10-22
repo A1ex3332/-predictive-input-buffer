@@ -1,4 +1,4 @@
-// Basu Input Buffer v2.9 (cube-style wave, wave auto-release, orb alignment, full ghost state, drift check, in-game console on F9)
+// Click Before Frames v2.9 (cube-style wave, wave auto-release, orb alignment, full ghost state, drift check, in-game console on F9)
 //
 // When you click (or release, in wave / robot), a hidden "ghost" player is simulated
 // ahead with your input. If the ghost dies, the input is retried with 1..N ticks of
@@ -247,7 +247,7 @@ namespace {
         bool robotAutoRelease = false;  // v2.12: robot auto-release (practice mode only)
         bool autoNormalRuns = false; // v2.14: let auto-release work outside practice too
         CCLabelBMFont* autoTag = nullptr;  // v2.14: on-screen "AUTO-RELEASE ON" tag
-        CCLabelBMFont* watermark = nullptr;  // v2.46: always-on "Basu Input Buffer" label while the buffer is on
+        CCLabelBMFont* watermark = nullptr;  // v2.46: always-on "Click Before Frames" label while the buffer is on
         bool usedThisAttempt = false;      // v2.46: the buffer was on at some point of this attempt
         bool learn = true;           // v2.13: per-level memory learned from your runs
         bool fullState = true;       // v2.11.1: copy the full v2.8 player state into the ghost
@@ -475,7 +475,7 @@ namespace {
             return;
         }
         buf.watermark->setVisible(buf.enabled);
-        buf.watermark->setString(fmt::format("Basu Input Buffer  |  {}", stageText()).c_str());
+        buf.watermark->setString(fmt::format("Click Before Frames  |  {}", stageText()).c_str());
     }
 
     void refreshAutoTag() {
@@ -497,7 +497,7 @@ namespace {
         auto* mod = Mod::get();
         auto* layer = GameManager::get()->m_playLayer;
         std::string text;
-        text += fmt::format("Basu Input Buffer {} console export\n", mod->getVersion().toVString());
+        text += fmt::format("Click Before Frames {} console export\n", mod->getVersion().toVString());
         if (layer && layer->m_level) {
             text += fmt::format("Level: {} (id {}){}\n", std::string(layer->m_level->m_levelName), layer->m_level->m_levelID.value(),
                 layer->m_isPracticeMode ? ", practice" : "");
@@ -2934,7 +2934,7 @@ protected:
             return false;
         }
         m_bgSprite->setColor({ 255, 195, 235 });
-        this->setTitle("Basu Input Buffer");
+        this->setTitle("Click Before Frames");
         if (m_title) {
             m_title->setColor(SOFT_PINK);
         }
@@ -3044,7 +3044,7 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
             return;
         }
         auto win = CCDirector::get()->getWinSize();
-        auto* label = CCLabelBMFont::create("Basu Input Buffer was on", "bigFont.fnt");
+        auto* label = CCLabelBMFont::create("Click Before Frames was on", "bigFont.fnt");
         label->setScale(0.35f);
         label->setColor({ 150, 205, 255 });
         label->setOpacity(170);
@@ -3092,7 +3092,7 @@ $on_mod(Loaded) {
         AllocConsole();
         FILE* out = nullptr;
         freopen_s(&out, "CONOUT$", "w", stdout);
-        SetConsoleTitleA("Basu Input Buffer - Live Console");
+        SetConsoleTitleA("Click Before Frames - Live Console");
     }
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
@@ -3209,7 +3209,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panel->addChild(frame);
         }
 
-        auto* title = CCLabelBMFont::create("Basu Input Buffer", "goldFont.fnt");
+        auto* title = CCLabelBMFont::create("Click Before Frames", "goldFont.fnt");
         title->setScale(0.55f);
         title->setAnchorPoint({ 0.f, 0.5f });
         title->setPosition({ 10.f, H - 14.f });

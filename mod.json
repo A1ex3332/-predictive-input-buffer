@@ -5,7 +5,7 @@
 	},
 	"version": "v2.51.0",
 	"id": "basu.input-buffer",
-	"name": "Basu Input Buffer",
+	"name": "Click Before Frames",
 	"developer": "BASU",
 	"description": "Trajectory-based input buffer: delays early clicks/releases by up to 8+ frames, with orb, pad and portal-aware prediction. github.com/raresdalas1009/-predictive-input-buffer",
 	"settings": {
