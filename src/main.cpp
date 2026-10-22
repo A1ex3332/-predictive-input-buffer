@@ -2234,6 +2234,14 @@ namespace {
 
         auto* p1 = self->m_player1;
         auto* p2 = dual ? layer->m_player2 : nullptr;
+        // v2.54: some levels (Relief) park a hidden Player 1 with its controls disabled and let
+        // you play Player 2 (a wave). Predicting P1 there tested a cube that never jumps, so
+        // every click "died" at t0. The player your clicks actually move is predicted instead.
+        if (p1->m_controlsDisabled && layer->m_player2 && !layer->m_player2->m_controlsDisabled && !twoPlayer) {
+            p1 = layer->m_player2;
+            p2 = nullptr;
+            dual = false;
+        }
 
         // v2.18 Click Between Frames: a click that arrives in the middle of P1's physics step
         // landed `midTick` of the way through the tick (measured from how far P1 has moved
@@ -2458,6 +2466,17 @@ namespace {
             say("  hitbox ghost {:.1f}x{:.1f} vs you {:.1f}x{:.1f}, ghost moved dx {:.1f} dy {:.1f}{}", g.size.width, g.size.height,
                 real.size.width, real.size.height, g.getMidX() - real.getMidX(), g.getMidY() - real.getMidY(),
                 buf.predictMovers ? " (moving objects predicted)" : "");
+            // v2.54: which players exist and which one your clicks move
+            auto desc = [](PlayerObject* p) {
+                if (!p) {
+                    return std::string("none");
+                }
+                char const* mode = p->m_isDart ? "wave" : p->m_isShip ? "ship" : p->m_isBird ? "ufo" : p->m_isBall ? "ball"
+                    : p->m_isRobot ? "robot" : p->m_isSpider ? "spider" : p->m_isSwing ? "swing" : "cube";
+                return fmt::format("{}{}{}", mode, p->m_controlsDisabled ? " controls-off" : "", p->isVisible() ? "" : " hidden");
+            };
+            say("  players: P1 {} | P2 {} | dual {} | predicted {}", desc(layer->m_player1), desc(layer->m_player2),
+                layer->m_gameState.m_isDualMode, p1 == layer->m_player1 ? "P1" : "P2");
         }
 
         // v2.36: with CBF, where inside the tick the click landed (0 = on the tick)
@@ -3104,7 +3123,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.53 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.54 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
