@@ -195,6 +195,7 @@ namespace {
         bool haveRealRect = false;
         CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
         std::unordered_set<GameObject*> harmless;  // hazards on you at the start of this prediction
+        bool explain = false;        // v2.33: log why an input was passed through untouched
         bool deathLog = false;       // v2.32: log what kills the press-now ghost on every no-save
         bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
         bool killerSeen = false;
@@ -296,6 +297,7 @@ namespace {
         if (starts("ghost killed") || starts("  hitbox")) return { 255, 120, 120 };
         if (starts("perf")) return { 150, 200, 255 };
         if (starts("F6") || starts("v2") || starts("path")) return { 255, 215, 90 };
+        if (starts("pass")) return { 140, 150, 170 };
         if (starts("memory")) return { 255, 150, 220 };
         if (starts("console")) return { 150, 255, 200 };
         return { 255, 255, 255 };
@@ -396,6 +398,7 @@ namespace {
         buf.robustSaves = mod->getSettingValue<bool>("robust-saves");
         buf.ignoreTouching = mod->getSettingValue<bool>("ignore-touching-hazards");
         buf.deathLog = mod->getSettingValue<bool>("death-log");
+        buf.explain = mod->getSettingValue<bool>("explain-inputs");
         buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
         buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
@@ -456,6 +459,7 @@ namespace {
             buf.predictMovers);
         text += fmt::format("debug: drift check {} | path view {} | perf log {} | death log {} | ignore touching {}\n", buf.driftCheck,
             buf.showPath, buf.perfLog, buf.deathLog, buf.ignoreTouching);
+        text += fmt::format("explain inputs {}\n", buf.explain);
         text += "----\n";
         for (auto const& line : exportLines) {
             text += line;
@@ -1852,6 +1856,10 @@ namespace {
         }
         buf.sinceInput = 0;
         if ((anyWave || anyShip) && buf.rapid >= SPAM_STREAK) {
+            if (buf.explain) {
+                say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid,
+                    st(std::clamp(buf.spamGap, 4, 40)));
+            }
             resetPending();
             buf.appliedInput = down;
             return false;
@@ -1910,6 +1918,9 @@ namespace {
         }
         int maxDelay = st(anyWave ? buf.ticksWave : (anyShip ? std::clamp(buf.shipMaxDelay, 0, 16) : buf.ticksAll));
         if (maxDelay <= 0) {
+            if (buf.explain) {
+                say("pass {}: max delay is 0 for this mode", down ? "press" : "release");
+            }
             buf.appliedInput = down;
             return false;
         }
@@ -1975,6 +1986,9 @@ namespace {
         }
 
         if (base >= horizon) {
+            if (buf.explain) {
+                say("pass {}: safe now (survives the {}t look-ahead)", down ? "press" : "release", horizon);
+            }
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
@@ -1985,6 +1999,9 @@ namespace {
         // spend the whole time budget searching (it was most of the per-click lag).
         bool groundPress = down && !anyFlyer && !anyRobot && !anySpider && !anyWave;
         if (groundPress && buf.lateCrash > 0 && base >= st(buf.lateCrash)) {
+            if (buf.explain) {
+                say("pass press: crash only at {}t, after the jump would land (late crash rule)", base);
+            }
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
@@ -2248,7 +2265,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.32 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.33 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

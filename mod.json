@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.32.0",
+	"version": "v2.33.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -249,6 +249,12 @@
 			"type": "bool",
 			"name": "Death log (debug)",
 			"description": "On every 'no save', log what killed the prediction ghost (object ID, type, where it is relative to you, hitboxes). Ghost deaths in the first 3 ticks are always logged. Use it with F8 when a level predicts badly.",
+			"default": false
+		},
+		"explain-inputs": {
+			"type": "bool",
+			"name": "Explain every input (debug)",
+			"description": "Also log the inputs that were passed straight to the game and why: safe as it is, spam guard, late-crash rule, max delay 0. Busy log; turn on to see what the mod does in a part, then use F8.",
 			"default": false
 		}
 	}
