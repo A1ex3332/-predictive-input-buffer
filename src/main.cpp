@@ -189,6 +189,12 @@ namespace {
         bool waveV46 = false;        // v2.7: use the old v4.6 wave rules instead of the cube-style ones
         bool orbAlign = true;        // v2.6: hold an early press back until the ghost is inside the orb
         bool orbAlignGround = false; // v2.11.1: also align presses made on the ground (jumps)
+        bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
+        bool killerSeen = false;
+        int killerTick = -1;
+        int killerId = 0, killerType = -1;
+        bool killerNoTouch = false, killerDisabled = false;
+        CCRect killerRect, ghostDeathRect;
         bool robustSaves = true;     // v2.28: a save must also survive with you slightly off
         float ghostShiftX = 0.f;     // v2.28: horizontal offset applied to the ghost's start
         int lateCrash = 90;          // v2.27: cube / ball crashes after this many ticks aren't this click's (0 = off)
@@ -280,6 +286,7 @@ namespace {
         if (starts("no save")) return { 175, 175, 190 };
         if (starts("skip") || starts("prediction budget")) return { 255, 180, 80 };
         if (starts("drift")) return { 255, 240, 150 };
+        if (starts("ghost killed") || starts("  hitbox")) return { 255, 120, 120 };
         if (starts("perf")) return { 150, 200, 255 };
         if (starts("F6") || starts("v2") || starts("path")) return { 255, 215, 90 };
         if (starts("memory")) return { 255, 150, 220 };
@@ -438,6 +445,7 @@ namespace {
         text += fmt::format("auto-release: wave {} robot {} dash {} normal runs {} window {} | movers: avoid {} predict {}\n",
             buf.autoRelease, buf.robotAutoRelease, buf.dashAutoRelease, buf.autoNormalRuns, buf.autoWindow, buf.avoidMovers,
             buf.predictMovers);
+        text += fmt::format("debug: drift check {} | path view {} | perf log {}\n", buf.driftCheck, buf.showPath, buf.perfLog);
         text += "----\n";
         for (auto const& line : exportLines) {
             text += line;
@@ -1921,12 +1929,34 @@ namespace {
         bool anySpider = p1->m_isSpider || (p2 && p2->m_isSpider);
         bool spiderPress = down && anySpider && !anyWave && !robotPress && buf.spiderSmart;
         bool shipInput = anyShip && !anyWave;  // v2.25: press or release, both steer the ship
+        buf.captureKiller = true;
+        buf.killerSeen = false;
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                  : robotPress    ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
                  : spiderPress   ? spiderScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
                  : shipInput     ? shipScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                                  : simulateOrbs(layer, p1, p2, dual, 0, down, horizon, releaseAfter, horizon, &end);
+        buf.captureKiller = false;
         buf.trackMovers = false;
+
+        // v2.30 diagnostics: a ghost that dies within a few ticks while you live means the
+        // prediction doesn't match you there. Log what killed it and how both hitboxes compare.
+        if (buf.killerSeen && base <= st(3)) {
+            auto real = p1->getObjectRect();
+            auto const& g = buf.ghostDeathRect;
+            if (buf.killerType >= 0) {
+                auto const& k = buf.killerRect;
+                say("ghost killed at t{} by obj {} (type {}{}{}) at dx {:.1f} dy {:.1f} size {:.1f}x{:.1f}", buf.killerTick, buf.killerId,
+                    buf.killerType, buf.killerNoTouch ? ", no-touch" : "", buf.killerDisabled ? ", disabled" : "",
+                    k.getMidX() - real.getMidX(), k.getMidY() - real.getMidY(), k.size.width, k.size.height);
+            }
+            else {
+                say("ghost killed at t{} by no object (crushed / out of bounds / slope)", buf.killerTick);
+            }
+            say("  hitbox ghost {:.1f}x{:.1f} vs you {:.1f}x{:.1f}, ghost moved dx {:.1f} dy {:.1f}", g.size.width, g.size.height,
+                real.size.width, real.size.height, g.getMidX() - real.getMidX(), g.getMidY() - real.getMidY());
+        }
+
         if (base >= horizon) {
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
@@ -2201,7 +2231,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.29 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.30 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2213,6 +2243,23 @@ class $modify(BufPlayLayer, PlayLayer) {
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         if (buf.simulating && isGhost(player)) {
             buf.ghostDied = true;
+            // v2.30 diagnostics: remember the first thing that kills the press-now ghost
+            if (buf.captureKiller && !buf.killerSeen) {
+                buf.killerSeen = true;
+                buf.killerTick = buf.simTick;
+                buf.ghostDeathRect = player->getObjectRect();
+                if (object) {
+                    buf.killerId = object->m_objectID;
+                    buf.killerType = static_cast<int>(object->m_objectType);
+                    buf.killerNoTouch = object->m_isNoTouch;
+                    buf.killerDisabled = object->m_isDisabled;
+                    buf.killerRect = object->getObjectRect();
+                }
+                else {
+                    buf.killerId = 0;
+                    buf.killerType = -1;
+                }
+            }
             return;
         }
         resetPending();
