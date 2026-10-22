@@ -2034,6 +2034,12 @@ namespace {
             if (buf.explain) {
                 say("pass {}: spam ({} fast inputs in a row, gap < {}t)", down ? "press" : "release", buf.rapid, spamGap);
             }
+            // v2.47: path view marks inputs that skipped prediction (gray dot on you), so a
+            // missing path isn't mistaken for a broken mod
+            if (buf.showPath && buf.pathNode) {
+                buf.pathNode->clear();
+                buf.pathNode->drawDot(p1->getPosition(), 4.f, { 0.6f, 0.6f, 0.65f, 0.9f });
+            }
             resetPending();
             buf.appliedInput = down;
             return false;
@@ -2707,7 +2713,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.46 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.47 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
