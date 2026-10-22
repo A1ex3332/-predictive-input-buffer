@@ -195,6 +195,8 @@ namespace {
         bool haveRealRect = false;
         CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
         std::unordered_set<GameObject*> harmless;  // hazards on you at the start of this prediction
+        int baseEscape = -1;         // v2.36: press-now run only survives if you react by this tick
+        int baseCrash = -1;          // v2.36: ...otherwise it crashes here
         bool lowLatency = false;     // v2.35: never chain delays, small budget and max delay
         bool explain = false;        // v2.33: log why an input was passed through untouched
         bool deathLog = false;       // v2.32: log what kills the press-now ghost on every no-save
@@ -1272,9 +1274,11 @@ namespace {
                 break;
             }
 
-            checkGhost(layer, buf.ghost1, stepDt);
+            // v2.36: after a mid-tick (CBF) click the game finishes the tick and then runs its
+            // normal collision check with the full step, so the ghost does the same.
+            checkGhost(layer, buf.ghost1, dt);
             if (!buf.ghostDied && second) {
-                checkGhost(layer, buf.ghost2, stepDt);
+                checkGhost(layer, buf.ghost2, dt);
             }
             if (buf.ghostDied) {
                 died = true;
@@ -1581,6 +1585,10 @@ namespace {
             SimEnd turnEnd;
             int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
             if (turned >= length) {
+                if (buf.captureKiller && buf.baseEscape < 0) {
+                    buf.baseEscape = turnAt;
+                    buf.baseCrash = ret;
+                }
                 return horizon;
             }
         }
@@ -1642,6 +1650,10 @@ namespace {
             int retapped = simulateOrbs(layer, p1, p2, dual, delay, true, length, releaseAfter, length, &e);
             buf.retapAt = -1;
             if (retapped >= length) {
+                if (buf.captureKiller && buf.baseEscape < 0) {
+                    buf.baseEscape = at;
+                    buf.baseCrash = ret;
+                }
                 return horizon;
             }
         }
@@ -1697,6 +1709,10 @@ namespace {
             SimEnd turnEnd;
             int turned = simulateOrbs(layer, p1, p2, dual, delay, down, length, turnAt, length, &turnEnd);
             if (turned >= length) {
+                if (buf.captureKiller && buf.baseEscape < 0) {
+                    buf.baseEscape = turnAt;
+                    buf.baseCrash = ret;
+                }
                 return horizon;
             }
         }
@@ -2003,6 +2019,7 @@ namespace {
         bool shipInput = anyShip && !anyWave;  // v2.25: press or release, both steer the ship
         buf.captureKiller = true;
         buf.killerSeen = false;
+        buf.baseEscape = -1;
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
                  : robotPress    ? robotScore(layer, p1, p2, dual, 0, horizon, horizon, &end)
                  : spiderPress   ? spiderScore(layer, p1, p2, dual, 0, horizon, releaseAfter, horizon, &end)
@@ -2030,9 +2047,17 @@ namespace {
                 buf.predictMovers ? " (moving objects predicted)" : "");
         }
 
+        // v2.36: with CBF, where inside the tick the click landed (0 = on the tick)
+        std::string tickTag = midTick > 0.f ? fmt::format(" @{:.2f}", midTick) : std::string();
         if (base >= horizon) {
             if (buf.explain) {
-                say("pass {}: safe now (survives the {}t look-ahead)", down ? "press" : "release", horizon);
+                if (buf.baseEscape >= 0) {
+                    say("pass {}{}: safe only if you react by t{} (else crash at t{})", down ? "press" : "release", tickTag,
+                        buf.baseEscape, buf.baseCrash);
+                }
+                else {
+                    say("pass {}{}: safe now (survives the {}t look-ahead)", down ? "press" : "release", tickTag, horizon);
+                }
             }
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
@@ -2101,7 +2126,7 @@ namespace {
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
         }
         if (saved <= 0) {
-            say("no save: {} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", base, maxDelay,
+            say("no save: {}{} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", tickTag, base, maxDelay,
                 dbgBestK, dbgBestRet, horizon);
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
@@ -2162,7 +2187,7 @@ namespace {
         if (robotPress) {
             releaseAfter = robotUsedHold;  // the path view / drift check show the hold that works
         }
-        say("SAVED {} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", saved, saved * TICK, base, landed, maxDelay,
+        say("SAVED {}{} +{}t ({:g}f)  {}->{}  [max {}]{}", down ? "press" : "release", tickTag, saved, saved * TICK, base, landed, maxDelay,
             robustNote ? std::string("  (robust)")
             : fromMemory ? std::string("  (memory)")
             : cubeStyleWave && marginUsed ? std::string("  +margin")
@@ -2313,7 +2338,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
         say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
     }
-    say("v2.35 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.36 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
