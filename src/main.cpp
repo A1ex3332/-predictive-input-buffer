@@ -223,6 +223,7 @@ namespace {
         bool dashAutoRelease = false;  // v2.16: let go of a dash for you when it would crash
         bool autoDash = false;       // v2.16: the current auto-release ended a dash
         std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
+        bool moreTime = true;        // v2.43: at spots you keep dying, delay to give you more time
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
         int retapAt = -1;            // v2.15: ticks after the input at which the ghost taps again (-1 = never)
@@ -297,7 +298,7 @@ namespace {
     // budget / skips orange, drift yellow.
     ccColor3B lineColor(std::string const& line) {
         auto starts = [&](char const* prefix) { return line.rfind(prefix, 0) == 0; };
-        if (starts("SAVED")) return { 120, 255, 140 };
+        if (starts("SAVED") || starts("MORE TIME")) return { 120, 255, 140 };
         if (starts("ORB") || starts("orb")) return { 90, 220, 255 };
         if (starts("AUTO")) return { 200, 150, 255 };
         if (starts("no save")) return { 175, 175, 190 };
@@ -401,6 +402,7 @@ namespace {
         buf.robotSmart = mod->getSettingValue<bool>("robot-smart");
         buf.spiderSmart = mod->getSettingValue<bool>("spider-smart");
         buf.ufoSmart = mod->getSettingValue<bool>("ufo-smart");
+        buf.moreTime = mod->getSettingValue<bool>("more-time-death-spots");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
         buf.shipBuffer = mod->getSettingValue<bool>("ship-buffer");
@@ -2153,6 +2155,42 @@ namespace {
         // v2.36: with CBF, where inside the tick the click landed (0 = on the tick)
         std::string tickTag = midTick > 0.f ? fmt::format(" @{:.2f}", midTick) : std::string();
         if (base >= horizon) {
+            // v2.43 more time at death spots. This input is only safe if your next input comes
+            // in time, and level memory has seen you die here repeatedly: try small delays
+            // that push the crash further away (or remove it), so you get more time to react.
+            // Only at those spots, so normal play isn't delayed.
+            bool reactMode = cubeStyleWave || shipInput || ufoPress || spiderPress;
+            if (buf.moreTime && buf.learn && reactMode && buf.baseEscape >= 0 && spotAround(sliceOf(p1)).deaths >= 2) {
+                int crash0 = buf.baseCrash;
+                int bestK = 0;
+                int bestCrash = crash0;
+                int hold = (cubeStyleWave || shipInput) ? -1 : releaseAfter;
+                for (int k = 1; k <= maxDelay; ++k) {
+                    SimEnd e;
+                    int ret = simulateOrbs(layer, p1, p2, dual, k, down, horizon, hold, horizon, &e);
+                    if (e == SimEnd::StopSearch) {
+                        break;
+                    }
+                    if (ret >= horizon) {
+                        bestK = k;
+                        bestCrash = -1;  // no crash at all
+                        break;
+                    }
+                    int crashAt = k + ret;  // ticks from now
+                    if (crashAt >= crash0 + st(8) && crashAt > bestCrash) {
+                        bestK = k;
+                        bestCrash = crashAt;
+                    }
+                }
+                if (bestK > 0) {
+                    say("MORE TIME {}{} +{}t: crash t{} -> {} (died here {}x)", down ? "press" : "release", tickTag, bestK, crash0,
+                        bestCrash < 0 ? std::string("none") : fmt::format("t{}", bestCrash), spotAround(sliceOf(p1)).deaths);
+                    decided(layer, p1, p2, dual, bestK, down, horizon, releaseAfter);
+                    buf.shift = bestK;
+                    queueInput(bestK - early, down);
+                    return true;
+                }
+            }
             if (buf.explain) {
                 if (buf.baseEscape >= 0) {
                     say("pass {}{}: safe only if you react by t{} (else crash at t{})", down ? "press" : "release", tickTag,
@@ -2448,7 +2486,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.42 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.43 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

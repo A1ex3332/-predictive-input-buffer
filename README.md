@@ -41,3 +41,4 @@ Edit "yourname" in mod.json first. Practice use only; do not use for verified or
 - v2.39: CBF Extrapolate is detected and shown in the console/export (it's visual only; predictions are unaffected).
 - v2.40 UFO: crashes you could have flapped away from count as safe, landing counts as safe, smallest delay wins, spam guard for fast flapping.
 - v2.41 FPS: moving-object tracking drops far objects and keeps a short moving-now list (was checking up to 4096 objects every step and every prediction).
+- v2.43: more time at death spots - where you keep dying, react-only-safe inputs get the delay that pushes the crash furthest away.

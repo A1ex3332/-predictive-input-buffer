@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.42.0",
+	"version": "v2.43.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -273,6 +273,12 @@
 			"type": "bool",
 			"name": "UFO: smart flaps",
 			"description": "A UFO crash only counts if one more flap 6 / 12 / 18 ticks before it couldn't have saved you, landing on something counts as safe, the smallest delay that works wins, and fast flapping goes straight through (spam guard). Off = UFO uses the plain rules like before.",
+			"default": true
+		},
+		"more-time-death-spots": {
+			"type": "bool",
+			"name": "More time at spots you keep dying",
+			"description": "At a spot where level memory has seen you die 2+ times, an input that is only safe if your next input comes in time (wave / ship / UFO / spider) gets the small delay that pushes the crash furthest away, so you have more time to react. Normal play elsewhere is not affected. Needs Level memory.",
 			"default": true
 		}
 	}
