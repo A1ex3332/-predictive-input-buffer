@@ -2486,7 +2486,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.43 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.43.1 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2867,10 +2867,19 @@ class $modify(BufPlayerObject, PlayerObject) {
                 return;
             }
             snapshotObject(ring);
-            buf.orbsUsed.insert(ring);
-            if (buf.orbUsedTick < 0) {
-                buf.orbUsedTick = buf.simTick;
+            // v2.43: the game can still refuse the orb inside ringJump, so the orb only counts
+            // as used if it actually changed the ghost's motion or gravity.
+            double vy = m_yVelocity;
+            bool upsideDown = m_isUpsideDown;
+            bool dashing = m_isDashing;
+            PlayerObject::ringJump(ring, skipCheck);
+            if (m_yVelocity != vy || m_isUpsideDown != upsideDown || m_isDashing != dashing) {
+                buf.orbsUsed.insert(ring);
+                if (buf.orbUsedTick < 0) {
+                    buf.orbUsedTick = buf.simTick;
+                }
             }
+            return;
         }
         PlayerObject::ringJump(ring, skipCheck);
     }
