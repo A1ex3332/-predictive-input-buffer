@@ -283,6 +283,7 @@ namespace {
         if (starts("perf")) return { 150, 200, 255 };
         if (starts("F6") || starts("v2") || starts("path")) return { 255, 215, 90 };
         if (starts("memory")) return { 255, 150, 220 };
+        if (starts("console")) return { 150, 255, 200 };
         return { 255, 255, 255 };
     }
 
@@ -317,9 +318,19 @@ namespace {
     // Log line -> in-game panel history, plus the Windows console if enabled.
     // (Formatting a short string is cheap; it was the synchronous console writes
     //  that hitched, and those still only happen with the console setting on.)
+    // v2.29: the full log (not just the 8 lines on screen) for the F8 export, with the
+    // physics step each line happened on.
+    constexpr size_t EXPORT_LINES = 400;
+    std::deque<std::string> exportLines;
+    int logClock = 0;  // physics steps since the level started, kept by the update hook
+
     template <class... Args>
     void say(fmt::format_string<Args...> f, Args&&... args) {
         auto msg = fmt::format(f, std::forward<Args>(args)...);
+        exportLines.push_back(fmt::format("[{:>6}] {}", logClock, msg));
+        while (exportLines.size() > EXPORT_LINES) {
+            exportLines.pop_front();
+        }
         buf.logLines.push_back(msg);
         while (buf.logLines.size() > PANEL_LINES) {
             buf.logLines.pop_front();
@@ -400,6 +411,44 @@ namespace {
         bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease || buf.dashAutoRelease) && layer &&
             !layer->m_isPracticeMode;
         buf.autoTag->setVisible(on);
+    }
+
+    size_t memorySpots();
+
+    // v2.29 F8: copy the console to the clipboard (and save it to console-export.txt in the
+    // mod's save folder), with the version, level, physics rate and settings on top, so it
+    // can be pasted somewhere in one go.
+    void exportConsole() {
+        auto* mod = Mod::get();
+        auto* layer = GameManager::get()->m_playLayer;
+        std::string text;
+        text += fmt::format("Basu Input Buffer {} console export\n", mod->getVersion().toVString());
+        if (layer && layer->m_level) {
+            text += fmt::format("Level: {} (id {}){}\n", std::string(layer->m_level->m_levelName), layer->m_level->m_levelID.value(),
+                layer->m_isPracticeMode ? ", practice" : "");
+        }
+        float dt = buf.tickLength > 0.001f ? buf.tickLength : TICK;
+        text += fmt::format("{} | physics ~{:.0f} steps/s\n", stageText(), 60.f / dt);
+        text += fmt::format("budget {:g} ms | smart {} | full state {} | robust {} | late crash {} | practice only {}\n", buf.budgetMs,
+            buf.smart, buf.fullState, buf.robustSaves, buf.lateCrash, buf.practiceOnly);
+        text += fmt::format("orbs: align {} (ground {}, {}t) timing {} assume {} both {} | memory {} ({} spots)\n", buf.orbAlign,
+            buf.orbAlignGround, buf.orbWindow, buf.orbTiming, buf.assumeOrbs, buf.tryBothOrbs, buf.learn, memorySpots());
+        text += fmt::format("wave: v4.6 {} margin {} horizon {} spam gap {} | robot smart {} | spider smart {} | ship {} (max {}t)\n",
+            buf.waveV46, buf.waveMargin, buf.waveHorizon, buf.spamGap, buf.robotSmart, buf.spiderSmart, buf.shipBuffer, buf.shipMaxDelay);
+        text += fmt::format("auto-release: wave {} robot {} dash {} normal runs {} window {} | movers: avoid {} predict {}\n",
+            buf.autoRelease, buf.robotAutoRelease, buf.dashAutoRelease, buf.autoNormalRuns, buf.autoWindow, buf.avoidMovers,
+            buf.predictMovers);
+        text += "----\n";
+        for (auto const& line : exportLines) {
+            text += line;
+            text += '\n';
+        }
+
+        bool copied = geode::utils::clipboard::write(text);
+        std::error_code ec;
+        std::filesystem::create_directories(mod->getSaveDir(), ec);
+        std::ofstream(mod->getSaveDir() / "console-export.txt", std::ios::trunc) << text;
+        say("console {} ({} lines) + saved to console-export.txt", copied ? "copied to clipboard" : "NOT copied", exportLines.size());
     }
 
     std::string stageText() {
@@ -864,6 +913,10 @@ namespace {
 
     std::filesystem::path memoryFile() {
         return Mod::get()->getSaveDir() / "memory" / (memoryKey + ".txt");
+    }
+
+    size_t memorySpots() {
+        return memory.size();
     }
 
     void saveMemory() {
@@ -2148,7 +2201,7 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.28 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.29 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2179,6 +2232,8 @@ class $modify(BufPlayLayer, PlayLayer) {
         dropGhosts();
         readSettings();
         applyStage();
+        exportLines.clear();
+        logClock = 0;
         loadMemory(level);
         buf.ghost1 = makeGhost(this);
         buf.ghost2 = makeGhost(this);
@@ -2251,7 +2306,7 @@ class $modify(BufPlayLayer, PlayLayer) {
             buf.panelLines.push_back(line);
         }
 
-        auto* hint = CCLabelBMFont::create("F6 stage    F9 console    F10 path view    F11 forget level", "chatFont.fnt");
+        auto* hint = CCLabelBMFont::create("F6 stage   F8 copy log   F9 console   F10 path   F11 forget", "chatFont.fnt");
         hint->setScale(0.45f);
         hint->setColor({ 160, 190, 255 });
         hint->setAnchorPoint({ 0.5f, 0.5f });
@@ -2375,6 +2430,7 @@ class $modify(BufPlayerObject, PlayerObject) {
         auto* layer = GameManager::get()->m_playLayer;
         if (layer && this == layer->m_player1) {
             ++tickCount;
+            ++logClock;
             driftStep(this);
             memoryTick();
             if (buf.enabled) {
@@ -2515,6 +2571,9 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
             else if (key == KEY_F9) {
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
+            }
+            else if (key == KEY_F8) {
+                exportConsole();
             }
             else if (key == KEY_F11) {
                 memory.clear();
