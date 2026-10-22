@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.34.0",
+	"version": "v2.35.0",
 	"id": "basu.input-buffer",
 	"name": "Basu Input Buffer",
 	"developer": "lilWC",
@@ -255,6 +255,18 @@
 			"type": "bool",
 			"name": "Explain every input (debug)",
 			"description": "Also log the inputs that were passed straight to the game and why: safe as it is, spam guard, late-crash rule, max delay 0. Busy log; turn on to see what the mod does in a part, then use F8.",
+			"default": false
+		},
+		"cbf-sync": {
+			"type": "bool",
+			"name": "Click Between Frames sync",
+			"description": "With the Click Between Frames mod, a click lands partway through a physics tick. The prediction then starts from that exact moment, and delayed inputs land on the tick the prediction tested. Has no effect without CBF.",
+			"default": true
+		},
+		"low-latency": {
+			"type": "bool",
+			"name": "Low latency mode",
+			"description": "For players who feel the buffer as lag or delayed clicks: clicks made while a delay is waiting are not shifted after it (no chain of delayed clicks), delays are at most 1 frame, searches are capped at 3 ms (no frame hitches), and robust saves / wave margin (which can add a tick) are off.",
 			"default": false
 		}
 	}

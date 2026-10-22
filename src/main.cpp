@@ -195,6 +195,7 @@ namespace {
         bool haveRealRect = false;
         CCRect realRect1, realRect2;  // your hitboxes when the prediction starts
         std::unordered_set<GameObject*> harmless;  // hazards on you at the start of this prediction
+        bool lowLatency = false;     // v2.35: never chain delays, small budget and max delay
         bool explain = false;        // v2.33: log why an input was passed through untouched
         bool deathLog = false;       // v2.32: log what kills the press-now ghost on every no-save
         bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
@@ -212,6 +213,11 @@ namespace {
         bool perfLog = false;        // v2.21: log time / runs / ghost ticks per click
         int simRuns = 0;             // v2.21: predictions run for the current click
         long simTicks = 0;           // v2.21: ghost ticks stepped for the current click
+        bool cbfSync = true;         // v2.18: line the ghost up with Click Between Frames' mid-tick clicks
+        float firstStep = 1.f;       // v2.18: fraction of a tick the ghost's first step lasts
+        bool inRealUpdate = false;   // v2.18: inside P1's physics step (a CBF click lands here)
+        float tickStartX = 0.f;      // v2.18: P1's x at the start of the current tick
+        float tickDx = 0.f;          // v2.18: how far P1 moved in the last full tick
         bool dashAutoRelease = false;  // v2.16: let go of a dash for you when it would crash
         bool autoDash = false;       // v2.16: the current auto-release ended a dash
         std::unordered_set<GameObject*> orbsUsed;  // v2.16: orbs the ghost actually used this run
@@ -296,7 +302,7 @@ namespace {
         if (starts("drift")) return { 255, 240, 150 };
         if (starts("ghost killed") || starts("  hitbox")) return { 255, 120, 120 };
         if (starts("perf")) return { 150, 200, 255 };
-        if (starts("F6") || starts("v2") || starts("path")) return { 255, 215, 90 };
+        if (starts("F6") || starts("v2") || starts("path") || starts("Click")) return { 255, 215, 90 };
         if (starts("pass")) return { 140, 150, 170 };
         if (starts("memory")) return { 255, 150, 220 };
         if (starts("console")) return { 150, 255, 200 };
@@ -399,8 +405,18 @@ namespace {
         buf.ignoreTouching = mod->getSettingValue<bool>("ignore-touching-hazards");
         buf.deathLog = mod->getSettingValue<bool>("death-log");
         buf.explain = mod->getSettingValue<bool>("explain-inputs");
+        // v2.35 low latency mode: for players who feel the buffer as input lag. Short searches
+        // (no frame hitches), at most 1 frame of delay, no extra "margin" ticks, and clicks
+        // made while a delay is waiting aren't shifted (see intercept).
+        buf.lowLatency = mod->getSettingValue<bool>("low-latency");
+        if (buf.lowLatency) {
+            buf.budgetMs = std::min(buf.budgetMs, 3.0);
+            buf.robustSaves = false;
+            buf.waveMargin = false;
+        }
         buf.predictMovers = mod->getSettingValue<bool>("predict-moving-objects");
         buf.shipMaxDelay = static_cast<int>(mod->getSettingValue<int64_t>("ship-max-delay"));
+        buf.cbfSync = mod->getSettingValue<bool>("cbf-sync");
         buf.robotAutoRelease = mod->getSettingValue<bool>("robot-auto-release");
         buf.autoNormalRuns = mod->getSettingValue<bool>("auto-release-normal-runs");
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
@@ -459,7 +475,8 @@ namespace {
             buf.predictMovers);
         text += fmt::format("debug: drift check {} | path view {} | perf log {} | death log {} | ignore touching {}\n", buf.driftCheck,
             buf.showPath, buf.perfLog, buf.deathLog, buf.ignoreTouching);
-        text += fmt::format("explain inputs {}\n", buf.explain);
+        text += fmt::format("explain inputs {} | low latency {} | cbf sync {}{}\n", buf.explain, buf.lowLatency, buf.cbfSync,
+            Loader::get()->isModLoaded("syzzi.click_between_frames") ? " (CBF loaded)" : "");
         text += "----\n";
         for (auto const& line : exportLines) {
             text += line;
@@ -629,6 +646,8 @@ namespace {
         ghost->m_enable22Changes = real->m_enable22Changes;
         ghost->m_enableImpulseFix = real->m_enableImpulseFix;
         ghost->m_totalTime = real->m_totalTime;
+
+        ghost->m_lastPosition = real->m_lastPosition;  // v2.18: spider / move triggers read it (CBF sets it per tick)
 
         // vertical motion
         ghost->m_yVelocity = real->m_yVelocity;
@@ -1239,9 +1258,13 @@ namespace {
                 }
             }
 
-            advanceGhost(buf.ghost1, dt);
+            // v2.18: with CBF the click lands partway through a tick, so the ghost's first
+            // step is only the rest of that tick; after it, ghost and game are on the same
+            // tick boundaries again.
+            float stepDt = tick == 0 ? dt * buf.firstStep : dt;
+            advanceGhost(buf.ghost1, stepDt);
             if (second) {
-                advanceGhost(buf.ghost2, dt);
+                advanceGhost(buf.ghost2, stepDt);
             }
             releaseAutoClicks();
             if (buf.ghostDied) {
@@ -1249,9 +1272,9 @@ namespace {
                 break;
             }
 
-            checkGhost(layer, buf.ghost1, dt);
+            checkGhost(layer, buf.ghost1, stepDt);
             if (!buf.ghostDied && second) {
-                checkGhost(layer, buf.ghost2, dt);
+                checkGhost(layer, buf.ghost2, stepDt);
             }
             if (buf.ghostDied) {
                 died = true;
@@ -1828,6 +1851,24 @@ namespace {
 
         auto* p1 = self->m_player1;
         auto* p2 = dual ? layer->m_player2 : nullptr;
+
+        // v2.18 Click Between Frames: a click that arrives in the middle of P1's physics step
+        // landed `midTick` of the way through the tick (measured from how far P1 has moved
+        // since the tick started). The ghost then starts with the rest of that tick, and
+        // delayed inputs are queued one tick sooner, because the game's next tick boundary
+        // is already the ghost's tick 1.
+        float midTick = 0.f;
+        if (buf.cbfSync && buf.inRealUpdate && p1 && std::abs(buf.tickDx) > 0.01f) {
+            midTick = std::clamp((p1->m_position.x - buf.tickStartX) / buf.tickDx, 0.f, 0.999f);
+        }
+        buf.firstStep = 1.f - midTick;
+        struct FirstStepReset {
+            ~FirstStepReset() {
+                buf.firstStep = 1.f;
+            }
+        } firstStepReset;
+        int early = midTick > 0.f ? 1 : 0;
+
         bool anyShip = p1 && (p1->m_isShip || (p2 && p2->m_isShip));
         if (!p1 || p1->m_isDead || (anyShip && !buf.shipBuffer)) {
             resetPending();
@@ -1881,7 +1922,8 @@ namespace {
         // rhythm (tap length, hold length, follow-up clicks) is preserved.
         if (!buf.queue.empty()) {
             int after = buf.queue.back().ticksLeft;
-            queueInput(std::max(buf.shift, after), down);
+            // low latency: a new press isn't shifted, it goes right after what's already queued
+            queueInput(buf.lowLatency && down ? after : std::max(buf.shift - early, after), down);
             return true;
         }
 
@@ -1917,6 +1959,9 @@ namespace {
             horizon = fullWaveHorizon(mini);
         }
         int maxDelay = st(anyWave ? buf.ticksWave : (anyShip ? std::clamp(buf.shipMaxDelay, 0, 16) : buf.ticksAll));
+        if (buf.lowLatency) {
+            maxDelay = std::min(maxDelay, st(4));  // at most 1 frame (60 fps) of delay
+        }
         if (maxDelay <= 0) {
             if (buf.explain) {
                 say("pass {}: max delay is 0 for this mode", down ? "press" : "release");
@@ -1943,7 +1988,7 @@ namespace {
                 say("ORB {} +{}t ({:g}f) -> {}t", buf.orbWasTiming ? "timing" : "press", k, k * TICK, orbLanded);
                 decided(layer, p1, p2, dual, k, down, horizon, releaseAfter);
                 buf.shift = k;
-                queueInput(k, down);
+                queueInput(k - early, down);
                 return true;
             }
         }
@@ -2124,7 +2169,7 @@ namespace {
             : robotPress ? fmt::format("  hold {}t", robotUsedHold) : std::string());
         decided(layer, p1, p2, dual, saved, down, horizon, releaseAfter);
         buf.shift = saved;
-        queueInput(saved, down);
+        queueInput(saved - early, down);
         return true;
     }
 
@@ -2265,7 +2310,10 @@ $on_mod(Loaded) {
         freopen_s(&out, "CONOUT$", "w", stdout);
         SetConsoleTitleA("Basu Input Buffer - Live Console");
     }
-    say("v2.34 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    if (Loader::get()->isModLoaded("syzzi.click_between_frames")) {
+        say("Click Between Frames detected: mid-tick sync {}", buf.cbfSync ? "on" : "off");
+    }
+    say("v2.35 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -2505,6 +2553,9 @@ class $modify(BufGameObject, GameObject) {
 class $modify(BufPlayerObject, PlayerObject) {
     static void onModify(auto& self) {
         (void)self.setHookPriority("PlayerObject::playSpiderDashEffect", HOOK_PRIORITY);
+        // v2.18: run before Click Between Frames, so this sees each physics tick once, with
+        // its full dt, and CBF's mid-tick clicks arrive while inRealUpdate is set.
+        (void)self.setHookPriority("PlayerObject::update", HOOK_PRIORITY);
         (void)self.setHookPriority("PlayerObject::incrementJumps", HOOK_PRIORITY);
         (void)self.setHookPriority("PlayerObject::ringJump", HOOK_PRIORITY);
     }
@@ -2527,14 +2578,26 @@ class $modify(BufPlayerObject, PlayerObject) {
             }
         }
 
+        bool isP1 = layer && this == layer->m_player1;
+        if (isP1) {
+            buf.tickStartX = m_position.x;
+            buf.inRealUpdate = true;
+        }
         PlayerObject::update(dt);
-
-        // The ghost must step with the dt the real player gets. v2.23: with unlocked FPS the
-        // step length jitters from frame to frame, so use a running average; a big jump
-        // (FPS cap or time warp changed) is taken over straight away.
-        if (dt > 0.f) {
-            float avg = buf.tickLength;
-            buf.tickLength = (avg > 0.f && std::abs(dt - avg) < avg * 0.3f) ? avg * 0.9f + dt * 0.1f : dt;
+        if (isP1) {
+            buf.inRealUpdate = false;
+            float dx = m_position.x - buf.tickStartX;
+            if (std::abs(dx) > 0.01f) {
+                buf.tickDx = dx;
+            }
+            // The ghost must step with the dt the real player gets. v2.23: with unlocked FPS the
+            // step length jitters from frame to frame, so use a running average; a big jump
+            // (FPS cap or time warp changed) is taken over straight away. (P1 only: with CBF,
+            // P2 can be stepped in pieces of a tick.)
+            if (dt > 0.f) {
+                float avg = buf.tickLength;
+                buf.tickLength = (avg > 0.f && std::abs(dt - avg) < avg * 0.3f) ? avg * 0.9f + dt * 0.1f : dt;
+            }
         }
     }
 
