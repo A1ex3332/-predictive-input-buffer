@@ -504,19 +504,19 @@ namespace {
         buf.userBudget = buf.budgetMs;
     }
 
-    // v2.75 auto budget: a click may use at most ~45% of a frame (7.5 ms at 60 fps, 3 ms at
-    // 144), never more than the budget setting, and only 2 ms when the game is already behind.
+    // v2.76 auto budget: the budget setting is used as it is, and only cut (to 4 ms) while
+    // the game is already dropping frames. v2.75 also capped every click at 45% of a frame:
+    // at 240+ fps that was 2 ms, too short for a long cube jump's search (Penumbral's first
+    // jump: only +1..+5 delays were ever tried, so most clicks got no save).
     void clickBudget() {
         double budget = buf.userBudget;
         if (buf.autoBudget) {
             auto* director = CCDirector::get();
             double interval = director->getAnimationInterval() * 1000.0;
             double frame = director->getDeltaTime() * 1000.0;
-            double spare = std::max(2.0, interval * 0.45);
-            if (interval > 0.0 && frame > interval * 1.5) {
-                spare = 2.0;
+            if (interval > 0.0 && frame > std::max(interval * 2.0, 20.0)) {
+                budget = std::min(budget, 4.0);
             }
-            budget = std::min(budget, spare);
         }
         buf.budgetMs = budget;
     }
@@ -3069,7 +3069,7 @@ namespace {
         }
         if (saved <= 0) {
             say("no save: {}{} dies in {}t (max {}t, best +{}t -> {}t of {}){}", down ? "press" : "release", tickTag, base, maxDelay,
-                dbgBestK, dbgBestRet, horizon, crashFixed ? " - same crash at any timing (next obstacle)" : "");
+                dbgBestK, dbgBestRet, horizon, !crashFixed ? "" : base < st(30) ? " - too late: waiting only makes it crash sooner" : " - same crash at any timing (next obstacle)");
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
@@ -3678,7 +3678,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.75 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.76 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

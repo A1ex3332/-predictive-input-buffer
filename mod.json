@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.75.0",
+	"version": "v2.76.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -334,7 +334,7 @@
 		"auto-budget": {
 			"type": "bool",
 			"name": "Auto time budget",
-			"description": "Each click may use at most about 45% of a frame at your FPS (7.5 ms at 60 fps, 3 ms at 144), never more than the time budget setting, and only 2 ms when the game is already dropping frames. Stops frame drops without tuning the budget yourself.",
+			"description": "While the game is already dropping frames (a frame took over twice as long as it should, and over 20 ms), clicks get at most 4 ms of prediction time so it doesn't get worse. Otherwise the time budget setting is used as it is.",
 			"default": true
 		},
 		"menu-theme": {
