@@ -1857,12 +1857,34 @@ namespace {
     }
 
     // Same rules as the cube: the smallest delay that is safe (or clearly better) wins.
+    // v2.72: the crash happens at the same moment however late the input comes (delay k
+    // dies k ticks sooner, for the first SAME_CRASH_TRIES delays): it's the next obstacle's,
+    // not this input's, so the rest of the search can't help. Robot and UFO searches spent
+    // their whole time budget on exactly that, on almost every input.
+    constexpr int SAME_CRASH_TRIES = 4;
+    bool crashFixed = false;  // the last search stopped for that reason
+
+    bool sameCrash(int k, int ret, int base, int& streak) {
+        if (streak >= 0 && std::abs(k + ret - base) <= 1) {
+            ++streak;
+        }
+        else {
+            streak = -1;
+        }
+        if (streak >= SAME_CRASH_TRIES) {
+            crashFixed = true;
+            return true;
+        }
+        return false;
+    }
+
     int searchSmallest(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score) {
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
         int target = std::min(horizon, base + st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
+        int streak = 0;
         for (int k = 1; k <= maxDelay; ++k) {
             SimEnd end;
             int ret = score(k, target, &end);
@@ -1876,6 +1898,9 @@ namespace {
             if (ret >= target) {
                 *landed = ret;
                 return k;
+            }
+            if (sameCrash(k, ret, base, streak)) {
+                return 0;
             }
             if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
                 say("prediction budget hit at +{} ticks", k);
@@ -2005,6 +2030,7 @@ namespace {
         int target = needFull ? horizon : std::min(horizon, base + st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
+        int sameStreak = 0;
         int waveBestK = 0;
         int waveBestRet = base;
         for (int k = 1; k <= maxDelay; ++k) {
@@ -2036,6 +2062,9 @@ namespace {
                         break;
                     }
                 }
+            }
+            else if (ret < target && sameCrash(k, ret, base, sameStreak)) {
+                break;
             }
             else if (ret >= target) {
                 // v2.63: a delay that only lives 12 ticks longer can still crash later in the same
@@ -2699,6 +2728,7 @@ namespace {
         int landed = 0;
         int saved = 0;
         bool fromMemory = false;
+        crashFixed = false;
         // v2.13 memory: the delay that worked here on earlier runs is tried first, so the
         // same gap gets the same save every time.
         // The same judgement this mode's search uses, for a single delay.
@@ -2745,8 +2775,8 @@ namespace {
                                         groundPress);
         }
         if (saved <= 0) {
-            say("no save: {}{} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", tickTag, base, maxDelay,
-                dbgBestK, dbgBestRet, horizon);
+            say("no save: {}{} dies in {}t (max {}t, best +{}t -> {}t of {}){}", down ? "press" : "release", tickTag, base, maxDelay,
+                dbgBestK, dbgBestRet, horizon, crashFixed ? " - same crash at any timing (next obstacle)" : "");
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
             buf.appliedInput = down;
             return false;
@@ -3296,7 +3326,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.71 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.72 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
