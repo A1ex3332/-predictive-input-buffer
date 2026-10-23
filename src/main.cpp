@@ -1800,11 +1800,16 @@ namespace {
     constexpr int ROBOT_HOLDS[] = { 6, 14, 26, 45 };
     int robotUsedHold = -1;   // hold length that made the last robot run survive
 
+    // v2.73: quick pass of a robot / UFO / spider search: only the plain run per delay (your
+    // usual robot hold, no extra flap / flip). Those modes tried up to 5x more runs per
+    // delay, so the search ran out of time after 2-10 delays and missed saves further out.
+    bool quickScore = false;
+
     int robotScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int target, SimEnd* end) {
         int usual = robotHold.pick(st(20), 50);
         int best = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, usual, target, end);
         robotUsedHold = usual;
-        if (best >= target || *end == SimEnd::StopSearch) {
+        if (best >= target || *end == SimEnd::StopSearch || quickScore) {
             return best;
         }
         for (int hold : ROBOT_HOLDS) {
@@ -1832,7 +1837,7 @@ namespace {
     int spiderScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int releaseAfter, int target,
         SimEnd* end) {
         int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, releaseAfter, target, end);
-        if (ret >= target || *end == SimEnd::StopSearch) {
+        if (ret >= target || *end == SimEnd::StopSearch || quickScore) {
             return ret;
         }
         for (int margin : SPIDER_RETAP) {
@@ -1878,7 +1883,11 @@ namespace {
         return false;
     }
 
-    int searchSmallest(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score) {
+    int searchSmallest(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score,
+        double budget = -1.0, bool quiet = false) {
+        if (budget < 0.0) {
+            budget = buf.budgetMs;
+        }
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
         int target = std::min(horizon, base + st(12));
@@ -1902,12 +1911,32 @@ namespace {
             if (sameCrash(k, ret, base, streak)) {
                 return 0;
             }
-            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs) {
-                say("prediction budget hit at +{} ticks", k);
+            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() > budget) {
+                if (!quiet) {
+                    say("prediction budget hit at +{} ticks", k);
+                }
                 return 0;
             }
         }
         return 0;
+    }
+
+    // v2.73: quick pass over every delay first (half the budget), then the full scoring with
+    // whatever time is left.
+    int searchTwoPass(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score) {
+        quickScore = true;
+        int k = searchSmallest(horizon, maxDelay, base, landed, score, buf.budgetMs * 0.5, true);
+        quickScore = false;
+        if (k > 0) {
+            return k;
+        }
+        crashFixed = false;
+        double left = buf.budgetMs - clickMs();
+        if (left < 0.5) {
+            say("prediction budget hit (quick pass only)");
+            return 0;
+        }
+        return searchSmallest(horizon, maxDelay, base, landed, score, left);
     }
 
     // v2.25 ship scoring. Like the wave: a crash only counts if you couldn't have recovered.
@@ -1950,7 +1979,7 @@ namespace {
     int ufoScore(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, int horizon, int releaseAfter, int target,
         SimEnd* end) {
         int ret = simulateOrbs(layer, p1, p2, dual, delay, true, horizon, releaseAfter, target, end);
-        if (ret >= target || *end == SimEnd::StopSearch) {
+        if (ret >= target || *end == SimEnd::StopSearch || quickScore) {
             return ret;
         }
         for (int margin : UFO_REFLAP) {
@@ -2759,16 +2788,16 @@ namespace {
         }
         if (saved <= 0) {
             saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
-                  : robotPress    ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                  : robotPress    ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return robotScore(layer, p1, p2, dual, k, horizon, target, e);
                     })
-                  : spiderPress   ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                  : spiderPress   ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     })
                   : shipInput     ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return shipScore(layer, p1, p2, dual, k, down, horizon, target, e);
                     })
-                  : ufoPress      ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
+                  : ufoPress      ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     })
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed,
@@ -3326,7 +3355,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.72 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.73 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
