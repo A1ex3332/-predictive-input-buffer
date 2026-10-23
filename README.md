@@ -48,3 +48,4 @@ Practice use only; do not use for verified or leaderboard runs.
 - v2.58: fix v2.51 regression (every cube landing counted as a ceiling bump, so short hops were called safe too early); settings changed in the settings popup during a level are kept for that level; ding sound preloaded.
 - v2.59: low latency on by default and on every level (not per level); the F6 stage is one setting for every level and is kept between levels and restarts.
 - v2.60: low latency off by default and switched off once on every install (still one setting for all levels).
+- v2.61: prediction back to v2.48 behaviour: collision objects collide again in predictions, spam drops waiting inputs again, no ceiling-bump landing rule.

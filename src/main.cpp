@@ -59,10 +59,9 @@ namespace {
     }
 
     // Objects the ghost always collides with.
-    // v2.49: collision blocks (CollisionObject) are left out: they have no physical effect,
-    // and a ghost touching them could make collision triggers fire wrong or not at all.
+    // v2.61: back to the v2.48 set (v2.49 left CollisionObject out; cube and wave got less consistent)
     constexpr uint64_t COLLIDING_TYPES = typeBit(GameObjectType::Solid) | typeBit(GameObjectType::Hazard) | typeBit(GameObjectType::Slope) |
-                                         typeBit(GameObjectType::AnimatedHazard);
+                                         typeBit(GameObjectType::CollisionObject) | typeBit(GameObjectType::AnimatedHazard);
 
     constexpr uint64_t HAZARD_TYPES = typeBit(GameObjectType::Hazard) | typeBit(GameObjectType::AnimatedHazard);
 
@@ -1296,11 +1295,6 @@ namespace {
         int tick = 0;
         bool died = false;
         bool safe = false;
-        // v2.51 ceilings: a jump under a block bumps into it and comes down after a few ticks,
-        // far sooner than the 6 air ticks a landing needed, so those jumps never counted as
-        // landed and every click under a ceiling looked like a crash further on.
-        double prevVy = buf.ghost1->m_yVelocity;
-        bool bumped = false;
 
         collectMovers();
         for (; tick < total; ++tick) {
@@ -1396,17 +1390,6 @@ namespace {
             }
 
             bool grounded = buf.ghost1->m_isOnGround && (!second || buf.ghost2->m_isOnGround);
-            // v2.58: only a stop while still in the air and still going up is a ceiling bump.
-            // v2.51 counted any big velocity change, so every normal landing (falling speed
-            // -> 0) and every orb also counted, which cut the 6 air ticks a landing needs to 2
-            // for all cube jumps: short hops and drops off ledges were called "landed, safe"
-            // before the obstacle after them was even reached.
-            double vy = buf.ghost1->m_yVelocity;
-            double up = buf.ghost1->m_isUpsideDown ? -1.0 : 1.0;
-            if (!grounded && airTicks > 0 && prevVy * up > 3.0 && vy * up < 0.5) {
-                bumped = true;  // stopped dead in the air: hit something above
-            }
-            prevVy = vy;
             if (!grounded) {
                 ++airTicks;
                 groundTicks = 0;
@@ -1423,7 +1406,7 @@ namespace {
                 }
                 continue;
             }
-            if (airTicks < st(ballRun || bumped ? 2 : 6)) {
+            if (airTicks < st(ballRun ? 2 : 6)) {
                 continue;
             }
             if (groundTicks > st(ballRun ? 8 : 2)) {
@@ -2314,14 +2297,8 @@ namespace {
                 buf.pathNode->clear();
                 buf.pathNode->drawDot(p1->getPosition(), 4.f, { 0.6f, 0.6f, 0.65f, 0.9f });
             }
-            // v2.49: inputs still waiting are sent now, in order, instead of being dropped. A
-            // dropped press was a lost click: no jump, and click / touch / event triggers
-            // never saw it.
-            for (auto const& q : buf.queue) {
-                if (q.down != buf.appliedInput) {
-                    sendButton(layer, q.down);
-                }
-            }
+            // v2.61: waiting inputs are dropped again, like v2.48 (v2.49 sent them all at once,
+            // which turned a waiting press + this release into a zero-length tap)
             resetPending();
             buf.appliedInput = down;
             return false;
@@ -3154,7 +3131,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.60 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.61 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
