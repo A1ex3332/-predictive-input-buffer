@@ -1006,6 +1006,7 @@ namespace {
         int slice = 0;
         int tick = 0;
         int delay = 0;
+        bool skipped = false;  // v2.64: a save was held back here because of memory
     } pending;
 
     int sliceOf(PlayerObject* p) {
@@ -1111,7 +1112,7 @@ namespace {
         if (pending.active && tickCount - pending.tick >= st(30)) {
             creditPending();
         }
-        pending = { true, sliceOf(p1), tickCount, delay };
+        pending = { true, sliceOf(p1), tickCount, delay, false };
     }
 
     void memoryTick() {
@@ -1119,6 +1120,8 @@ namespace {
             creditPending();
         }
     }
+
+    bool memorySaysSkip(int slice);
 
     void memoryDeath() {
         if (!pending.active) {
@@ -1129,6 +1132,25 @@ namespace {
         ++spot.deaths;
         if (pending.delay > 0) {
             ++spot.bad;
+        }
+        // v2.64: memory held a save back and you died anyway, so leaving the input alone
+        // isn't working either: take back one failed save, so after a death or two the mod
+        // tries saving here again instead of skipping this spot forever (first jump of
+        // Slaughterhouse, after older versions' bad saves there).
+        if (pending.skipped) {
+            int worst = pending.slice;
+            for (int s = pending.slice - 1; s <= pending.slice + 1; ++s) {
+                auto it = memory.find(s);
+                if (it != memory.end() && it->second.bad > memory[worst].bad) {
+                    worst = s;
+                }
+            }
+            if (memory[worst].bad > 0) {
+                --memory[worst].bad;
+            }
+            if (!memorySaysSkip(pending.slice)) {
+                say("memory: died with the input left alone, saves will be tried here again");
+            }
         }
         memoryChanged();
     }
@@ -2548,6 +2570,7 @@ namespace {
         if (memorySaysSkip(slice)) {
             say("memory: saves here failed before, input left alone");
             decided(layer, p1, p2, dual, 0, down, horizon, releaseAfter);
+            pending.skipped = true;
             buf.appliedInput = down;
             return false;
         }
@@ -3145,7 +3168,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.63 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.64 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
