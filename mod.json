@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.74.0",
+	"version": "v2.75.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -330,6 +330,60 @@
 			"name": "Performance mode",
 			"description": "For PCs that drop frames when you click: predictions get at most 4 ms per click, no extra robustness checks, orbs are only tried with a normal click (no late-click retries), and the drift check and live path view are off. Saves can be a little less precise.",
 			"default": false
+		},
+		"auto-budget": {
+			"type": "bool",
+			"name": "Auto time budget",
+			"description": "Each click may use at most about 45% of a frame at your FPS (7.5 ms at 60 fps, 3 ms at 144), never more than the time budget setting, and only 2 ms when the game is already dropping frames. Stops frame drops without tuning the budget yourself.",
+			"default": true
+		},
+		"menu-theme": {
+			"type": "string",
+			"name": "Menu theme",
+			"description": "Colours of the in-game menu.",
+			"default": "Pink",
+			"one-of": [
+				"Pink",
+				"Blue",
+				"Green",
+				"Dark"
+			]
+		},
+		"key-stage": {
+			"type": "string",
+			"name": "Key: change stage",
+			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
+			"default": "F6"
+		},
+		"key-menu": {
+			"type": "string",
+			"name": "Key: open menu",
+			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
+			"default": "F7"
+		},
+		"key-export": {
+			"type": "string",
+			"name": "Key: copy console log",
+			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
+			"default": "F8"
+		},
+		"key-console": {
+			"type": "string",
+			"name": "Key: show / hide console",
+			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
+			"default": "F9"
+		},
+		"key-path": {
+			"type": "string",
+			"name": "Key: path view",
+			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
+			"default": "F10"
+		},
+		"key-forget": {
+			"type": "string",
+			"name": "Key: forget this level",
+			"description": "F1-F12, a letter (A-Z) or a number (0-9). Empty or None = no key.",
+			"default": "F11"
 		}
 	},
 	"resources": {

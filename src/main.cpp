@@ -148,6 +148,10 @@ namespace {
         bool panelOpen = false;  // closed by default, remembered for the session
         bool panelDirty = false; // v2.71: new log lines, the panel is redrawn once on the next step
         bool perfMode = false;   // v2.71: performance mode
+        double userBudget = 6.0; // v2.75: the budget from the settings (budgetMs is this click's)
+        bool autoBudget = true;  // v2.75: budget follows the frame rate
+        int keys[6] = { 0, 0, 0, 0, 0, 0 };  // v2.75: stage, menu, export, console, path, forget
+        std::unordered_set<GameObject*> simDisabled;  // v2.75: objects a toggle orb switched off in this prediction
         std::deque<std::string> logLines;
 
         bool simulating = false;
@@ -405,10 +409,36 @@ namespace {
         buf.releaseShift = 0;
     }
 
+    // v2.75: "F6", "G", "7", "None" -> key code (0 = unbound)
+    int parseKey(std::string name) {
+        for (auto& c : name) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        if (name.size() >= 2 && name[0] == 'F') {
+            int n = std::atoi(name.c_str() + 1);
+            if (n >= 1 && n <= 12) {
+                return KEY_F1 + (n - 1);
+            }
+        }
+        if (name.size() == 1 && name[0] >= 'A' && name[0] <= 'Z') {
+            return KEY_A + (name[0] - 'A');
+        }
+        if (name.size() == 1 && name[0] >= '0' && name[0] <= '9') {
+            return KEY_Zero + (name[0] - '0');
+        }
+        return 0;
+    }
+
     void readSettings() {
         auto* mod = Mod::get();
         buf.smart = mod->getSettingValue<bool>("smart-prediction");
         buf.budgetMs = mod->getSettingValue<double>("sim-budget-ms");
+        buf.autoBudget = mod->getSettingValue<bool>("auto-budget");
+        // v2.75 rebindable keys
+        char const* keyNames[] = { "key-stage", "key-menu", "key-export", "key-console", "key-path", "key-forget" };
+        for (int i = 0; i < 6; ++i) {
+            buf.keys[i] = parseKey(mod->getSettingValue<std::string>(keyNames[i]));
+        }
         buf.practiceOnly = mod->getSettingValue<bool>("practice-only");
         buf.groundHorizon = static_cast<int>(mod->getSettingValue<int64_t>("ground-horizon"));
         buf.waveHorizon = static_cast<int>(mod->getSettingValue<int64_t>("wave-horizon"));
@@ -471,6 +501,24 @@ namespace {
             buf.orbTiming = false;
             buf.driftCheck = false;
         }
+        buf.userBudget = buf.budgetMs;
+    }
+
+    // v2.75 auto budget: a click may use at most ~45% of a frame (7.5 ms at 60 fps, 3 ms at
+    // 144), never more than the budget setting, and only 2 ms when the game is already behind.
+    void clickBudget() {
+        double budget = buf.userBudget;
+        if (buf.autoBudget) {
+            auto* director = CCDirector::get();
+            double interval = director->getAnimationInterval() * 1000.0;
+            double frame = director->getDeltaTime() * 1000.0;
+            double spare = std::max(2.0, interval * 0.45);
+            if (interval > 0.0 && frame > interval * 1.5) {
+                spare = 2.0;
+            }
+            budget = std::min(budget, spare);
+        }
+        buf.budgetMs = budget;
     }
 
     void applyStage() {
@@ -950,6 +998,8 @@ namespace {
         double x, y, vx, vy;
         double turn = 0.0;  // radians the motion direction turns per step (0 = straight)
         double rotX = 0.0, rotY = 0.0, vrot = 0.0;  // both axes kept as they were (skewed objects)
+        double ax = 0.0, ay = 0.0;  // v2.75: speeding up / slowing down (easing), per step
+        int accelSteps = 0;         // v2.75: how long the easing is followed (until it would stop / over 3x speed)
     };
     std::vector<Mover> movers;
 
@@ -975,6 +1025,14 @@ namespace {
                     if (std::abs(turn) > 1e-4 && std::abs(turn) < 0.5 && ratio > 0.8 && ratio < 1.25) {
                         m.turn = turn;
                     }
+                    // v2.75: straight, but faster or slower than the step before: eased movement
+                    else if (std::abs(turn) <= 1e-4 && std::abs(ratio - 1.0) > 1e-3 && ratio > 0.5 && ratio < 2.0) {
+                        m.ax = w.vx - w.pvx;
+                        m.ay = w.vy - w.pvy;
+                        double along = (m.ax * w.vx + m.ay * w.vy) / speed;  // + speeding up, - slowing down
+                        double steps = along < 0.0 ? speed / -along : 2.0 * speed / along;
+                        m.accelSteps = static_cast<int>(std::min(steps, 1000.0));
+                    }
                 }
                 m.rotX = object->getRotationX();
                 m.rotY = object->getRotationY();
@@ -988,6 +1046,13 @@ namespace {
         for (auto const& m : movers) {
             double x = m.x + m.vx * steps;
             double y = m.y + m.vy * steps;
+            if (m.accelSteps > 0 && steps > 0) {
+                // eased: the speed keeps changing the same way, then stays (stopped or at 3x)
+                int n = std::min(steps, m.accelSteps);
+                double grow = 0.5 * n * (n + 1);
+                x = m.x + m.vx * steps + m.ax * (grow + static_cast<double>(n) * (steps - n));
+                y = m.y + m.vy * steps + m.ay * (grow + static_cast<double>(n) * (steps - n));
+            }
             if (m.turn != 0.0 && steps > 0) {
                 // sum of the step vector turned by `turn` once more every step
                 std::complex<double> v { m.vx, m.vy };
@@ -1090,7 +1155,9 @@ namespace {
     }
 
     std::filesystem::path memoryFile() {
-        return Mod::get()->getSaveDir() / "memory" / (memoryKey + "_v2.txt");  // v2.37: slices keyed by the real position
+        // v2.37: slices keyed by the real position. v2.75: _v3, a fresh start after the
+        // prediction fixes of v2.61-v2.74 (old files learned from the buggy versions)
+        return Mod::get()->getSaveDir() / "memory" / (memoryKey + "_v3.txt");
     }
 
     size_t memorySpots() {
@@ -1137,6 +1204,24 @@ namespace {
         Spot spot;
         while (in >> slice >> spot.ok >> spot.bad >> spot.deaths >> spot.delaySum) {
             memory[slice] = spot;
+        }
+        // v2.75: memory fades. Opened again more than 12 hours later, everything learned counts
+        // a quarter less (the average delay at a spot stays the same), so old mistakes and
+        // old death spots don't stick forever.
+        std::error_code ec;
+        auto written = std::filesystem::last_write_time(memoryFile(), ec);
+        if (!ec && std::filesystem::file_time_type::clock::now() - written > std::chrono::hours(12)) {
+            for (auto it = memory.begin(); it != memory.end();) {
+                auto& s = it->second;
+                uint32_t ok = s.ok * 3 / 4;
+                s.delaySum = s.ok > 0 ? static_cast<uint32_t>(static_cast<uint64_t>(s.delaySum) * ok / s.ok) : 0;
+                s.ok = ok;
+                s.bad = s.bad * 3 / 4;
+                s.deaths = s.deaths * 3 / 4;
+                it = (s.ok | s.bad | s.deaths) == 0 ? memory.erase(it) : std::next(it);
+            }
+            memoryDirty = true;
+            saveMemory();
         }
         if (!memory.empty()) {
             say("memory: {} spots learned on this level", memory.size());
@@ -1268,6 +1353,7 @@ namespace {
         buf.snapshots.clear();
         buf.simUsed.clear();
         buf.orbsUsed.clear();
+        buf.simDisabled.clear();
     }
 
     void advanceGhost(PlayerObject* ghost, float dt) {
@@ -1884,13 +1970,13 @@ namespace {
     }
 
     int searchSmallest(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score,
-        double budget = -1.0, bool quiet = false) {
+        double budget = -1.0, bool quiet = false, bool needFull = false) {
         if (budget < 0.0) {
             budget = buf.budgetMs;
         }
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
-        int target = std::min(horizon, base + st(12));
+        int target = needFull ? horizon : std::min(horizon, base + st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
         int streak = 0;
@@ -1923,9 +2009,10 @@ namespace {
 
     // v2.73: quick pass over every delay first (half the budget), then the full scoring with
     // whatever time is left.
-    int searchTwoPass(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score) {
+    int searchTwoPass(int horizon, int maxDelay, int base, int* landed, std::function<int(int, int, SimEnd*)> const& score,
+        bool needFull = false) {
         quickScore = true;
-        int k = searchSmallest(horizon, maxDelay, base, landed, score, buf.budgetMs * 0.5, true);
+        int k = searchSmallest(horizon, maxDelay, base, landed, score, buf.budgetMs * 0.5, true, needFull);
         quickScore = false;
         if (k > 0) {
             return k;
@@ -1936,7 +2023,7 @@ namespace {
             say("prediction budget hit (quick pass only)");
             return 0;
         }
-        return searchSmallest(horizon, maxDelay, base, landed, score, left);
+        return searchSmallest(horizon, maxDelay, base, landed, score, left, false, needFull);
     }
 
     // v2.25 ship scoring. Like the wave: a crash only counts if you couldn't have recovered.
@@ -2126,6 +2213,178 @@ namespace {
             return waveBestK;
         }
         return 0;
+    }
+
+    // v2.75 run check (test bench). Every attempt played from the level start is recorded
+    // (the inputs the game got, and where you were on every physics step); the longest one
+    // per level is kept. "Check run" replays it on the hidden ghost at the start of your next
+    // attempt and reports how long the ghost follows the recording. Run it after an update:
+    // if the ghost stops matching much earlier than before, the update changed the physics
+    // copy. Moving objects and triggers aren't replayed, so it's a comparison between
+    // versions, not a percentage that should reach 100.
+    struct BenchRun {
+        float startX = 0.f, startY = 0.f, dt = TICK;
+        std::vector<std::pair<int, bool>> inputs;
+        std::vector<CCPoint> track;
+    };
+    BenchRun benchLive;
+    bool benchRecording = false;
+    bool benchNeedStart = false;  // next P1 step is the first of an attempt
+    bool benchPending = false;    // "Check run" was pressed
+    std::string lastBench;        // last result, for the stats popup
+
+    std::filesystem::path benchFile() {
+        return Mod::get()->getSaveDir() / "bench" / (memoryKey + ".txt");
+    }
+
+    size_t benchSavedTicks() {
+        std::ifstream in(benchFile());
+        float x, y, dt;
+        size_t ticks = 0;
+        if (in >> x >> y >> dt >> ticks) {
+            return ticks;
+        }
+        return 0;
+    }
+
+    bool benchLoad(BenchRun& r) {
+        std::ifstream in(benchFile());
+        size_t ticks = 0, inputs = 0;
+        if (!(in >> r.startX >> r.startY >> r.dt >> ticks >> inputs)) {
+            return false;
+        }
+        for (size_t i = 0; i < inputs; ++i) {
+            int t, d;
+            if (!(in >> t >> d)) {
+                return false;
+            }
+            r.inputs.push_back({ t, d != 0 });
+        }
+        for (size_t i = 0; i < ticks; ++i) {
+            float x, y;
+            if (!(in >> x >> y)) {
+                return false;
+            }
+            r.track.push_back({ x, y });
+        }
+        return !r.track.empty();
+    }
+
+    void benchStart(PlayLayer* layer, PlayerObject* p1) {
+        benchLive = {};
+        benchLive.startX = p1->getPosition().x;
+        benchLive.startY = p1->getPosition().y;
+        benchLive.dt = buf.tickLength;
+        // only runs from the level start (no practice checkpoint)
+        bool fromCheckpoint = layer->m_isPracticeMode && layer->m_checkpointArray && layer->m_checkpointArray->count() > 0;
+        benchRecording = !memoryKey.empty() && !fromCheckpoint;
+    }
+
+    void benchInput(bool down) {
+        if (benchRecording) {
+            benchLive.inputs.push_back({ static_cast<int>(benchLive.track.size()), down });
+        }
+    }
+
+    void benchStep(PlayerObject* p1) {
+        if (benchRecording) {
+            benchLive.track.push_back(p1->getPosition());
+            if (benchLive.track.size() > 200000) {
+                benchRecording = false;
+            }
+        }
+    }
+
+    // end of an attempt: keep it if it's the longest run from the start so far
+    void benchFinish() {
+        if (!benchRecording) {
+            return;
+        }
+        benchRecording = false;
+        if (benchLive.track.size() < 240 || benchLive.track.size() <= benchSavedTicks()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(benchFile().parent_path(), ec);
+        std::ofstream out(benchFile(), std::ios::trunc);
+        out << benchLive.startX << ' ' << benchLive.startY << ' ' << benchLive.dt << ' ' << benchLive.track.size() << ' '
+            << benchLive.inputs.size() << '\n';
+        for (auto const& [t, d] : benchLive.inputs) {
+            out << t << ' ' << (d ? 1 : 0) << '\n';
+        }
+        for (auto const& p : benchLive.track) {
+            out << p.x << ' ' << p.y << '\n';
+        }
+    }
+
+    void benchCheck(PlayLayer* layer, PlayerObject* p1) {
+        BenchRun r;
+        if (!benchLoad(r)) {
+            say("run check: no recorded run for this level yet (play one attempt from the start first)");
+            return;
+        }
+        if (std::abs(r.startX - p1->getPosition().x) > 0.5f || std::abs(r.startY - p1->getPosition().y) > 0.5f) {
+            say("run check: this attempt doesn't start where the recording did (start from the beginning, no checkpoint)");
+            benchPending = true;
+            return;
+        }
+        buf.simulating = true;
+        buf.ghostDied = false;
+        buf.ghostHitPortal = false;
+        buf.haveRealRect = false;
+        buf.harmless.clear();
+        buf.orbClick = false;  // orbs only through the recorded inputs
+        buf.retapAt = -1;
+        copyState(buf.ghost1, p1);
+        buf.held1 = false;
+        buf.auto1 = false;
+        buf.autoAt1 = -1;
+        size_t next = 0;
+        int firstOff = -1;
+        float maxErr = 0.f;
+        int t = 0;
+        char const* end = "end of the recording";
+        auto clockStart = std::chrono::steady_clock::now();
+        for (; t < static_cast<int>(r.track.size()); ++t) {
+            while (next < r.inputs.size() && r.inputs[next].first <= t) {
+                pressGhost(buf.ghost1, r.inputs[next].second);
+                ++next;
+            }
+            buf.simTick = t;
+            advanceGhost(buf.ghost1, r.dt);
+            releaseAutoClicks();
+            if (!buf.ghostDied) {
+                checkGhost(layer, buf.ghost1, r.dt);
+            }
+            if (buf.ghostDied) {
+                end = "the ghost died";
+                break;
+            }
+            if (buf.ghostHitPortal) {
+                end = "a mode portal (predictions stop there)";
+                break;
+            }
+            auto g = buf.ghost1->getPosition();
+            float err = std::hypot(g.x - r.track[t].x, g.y - r.track[t].y);
+            maxErr = std::max(maxErr, err);
+            if (err > 3.f && firstOff < 0) {
+                firstOff = t;
+            }
+        }
+        restoreObjects();
+        buf.ghost1->stopAllActions();
+        buf.simulating = false;
+        buf.orbClick = buf.assumeOrbs;
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - clockStart).count();
+        int matched = firstOff < 0 ? t : firstOff;
+        lastBench = fmt::format("{}/{} steps ({:.0f}%) match, stopped at {}", matched, r.track.size(),
+            100.0 * matched / r.track.size(), end);
+        say("run check: {} | max error {:.1f}u{} | {:.0f} ms", lastBench, maxErr,
+            std::abs(r.dt - buf.tickLength) > 1e-4f ? " | recorded at another frame rate" : "", ms);
+        std::error_code ec;
+        std::filesystem::create_directories(Mod::get()->getSaveDir(), ec);
+        std::ofstream(Mod::get()->getSaveDir() / "run-check-results.txt", std::ios::app)
+            << Mod::get()->getVersion().toVString() << ' ' << memoryKey << ": " << lastBench << '\n';
     }
 
     // v2.65 live path (F10): between clicks the path keeps updating (v2.70: 20 times a second):
@@ -2382,11 +2641,15 @@ namespace {
                 text += "\n";
             }
         }
+        if (!lastBench.empty()) {
+            text += "Run check: " + lastBench + "\n";
+        }
         return text;
     }
 
     bool intercept(GJBaseGameLayer* self, bool down, bool isPlayer1) {
         clickStart = std::chrono::steady_clock::now();
+        clickBudget();
         auto* layer = GameManager::get()->m_playLayer;
         if (!layer) {
             return false;
@@ -2774,7 +3037,8 @@ namespace {
         // longer than pressing now still crashed later in the same jump (Acheron's first jump:
         // +32t..+40t "saves" that died ~130 ticks later, every time); those clicks now go
         // through untouched instead of being moved by up to 10 frames for nothing.
-        int needed = groundPress ? horizon : std::min(horizon, base + st(12));
+        // v2.75: robot jumps and UFO / swing flaps too (no more half saves there either)
+        int needed = (groundPress || robotPress || ufoPress) ? horizon : std::min(horizon, base + st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
             int target = needed;
@@ -2790,7 +3054,7 @@ namespace {
             saved = cubeStyleWave ? searchWave(layer, p1, p2, dual, down, horizon, maxDelay, base, &landed)
                   : robotPress    ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return robotScore(layer, p1, p2, dual, k, horizon, target, e);
-                    })
+                    }, true)
                   : spiderPress   ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return spiderScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     })
@@ -2799,7 +3063,7 @@ namespace {
                     })
                   : ufoPress      ? searchTwoPass(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
-                    })
+                    }, true)
                                   : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed,
                                         groundPress);
         }
@@ -3040,10 +3304,29 @@ class BufferMenu : public geode::Popup {
         { "explain-inputs", "Explain inputs (debug)" },
     };
 
-    // v2.50: cute theme
-    static constexpr ccColor3B PINK { 255, 150, 205 };
-    static constexpr ccColor3B SOFT_PINK { 255, 205, 230 };
-    static constexpr ccColor3B LILAC { 215, 190, 255 };
+    // v2.50: cute theme. v2.75: colour themes (setting "Menu theme")
+    struct Theme {
+        ccColor3B main, soft, accent, bg;
+        char const* button;
+    };
+
+public:
+    static Theme currentTheme() {
+        auto name = Mod::get()->getSettingValue<std::string>("menu-theme");
+        if (name == "Blue") {
+            return { { 120, 180, 255 }, { 205, 228, 255 }, { 170, 210, 255 }, { 170, 205, 255 }, "GJ_button_06.png" };
+        }
+        if (name == "Green") {
+            return { { 120, 230, 150 }, { 210, 255, 220 }, { 180, 240, 200 }, { 170, 235, 190 }, "GJ_button_01.png" };
+        }
+        if (name == "Dark") {
+            return { { 200, 160, 255 }, { 225, 225, 235 }, { 170, 170, 190 }, { 90, 85, 110 }, "GJ_button_04.png" };
+        }
+        return { { 255, 150, 205 }, { 255, 205, 230 }, { 215, 190, 255 }, { 255, 195, 235 }, "GJ_button_02.png" };
+    }
+
+private:
+    Theme m_t = currentTheme();
 
     CCLabelBMFont* m_stage = nullptr;
     CCLabelBMFont* m_status = nullptr;
@@ -3065,7 +3348,7 @@ class BufferMenu : public geode::Popup {
     void addFloaters() {
         for (int i = 0; i < 9; ++i) {
             bool sparkle = i % 3 == 2;
-            auto* sprite = sparkle ? CCSprite::create("sparkle.png"_spr) : heart(0.3f + 0.05f * (i % 3), i % 2 ? PINK : LILAC);
+            auto* sprite = sparkle ? CCSprite::create("sparkle.png"_spr) : heart(0.3f + 0.05f * (i % 3), i % 2 ? m_t.main : m_t.accent);
             if (sparkle) {
                 sprite->setScale(0.35f);
             }
@@ -3090,7 +3373,7 @@ class BufferMenu : public geode::Popup {
 
     void colorLabels() {
         for (size_t i = 0; i < m_labels.size(); ++i) {
-            m_labels[i]->setColor(optionValue(OPTIONS[i]) ? SOFT_PINK : ccColor3B { 170, 160, 185 });
+            m_labels[i]->setColor(optionValue(OPTIONS[i]) ? m_t.soft : ccColor3B { 170, 160, 185 });
         }
     }
 
@@ -3140,6 +3423,35 @@ class BufferMenu : public geode::Popup {
         exportConsole();
     }
 
+    // v2.75 presets: stage + the switches that matter most, in one click
+    void onPreset(CCObject* sender) {
+        auto* mod = Mod::get();
+        int which = sender->getTag();
+        int stage = which == 0 ? 2 : which == 1 ? 3 : 5;  // 2f / 4f / 8f
+        mod->setSettingValue<bool>("robust-saves", true);
+        mod->setSettingValue<bool>("wave-safety-margin", which != 2);
+        mod->setSettingValue<bool>("more-time-death-spots", which != 0);
+        mod->setSettingValue<bool>("low-latency", false);
+        buf.stage = stage;
+        mod->setSavedValue("stage", buf.stage);
+        resetPending();
+        applyStage();
+        readSettings();
+        refreshWatermark();
+        refreshPanel();
+        say("preset: {} -> {}", which == 0 ? "Safe" : which == 1 ? "Balanced" : "Aggressive", stageText());
+        refresh();
+    }
+
+    void onRunCheck(CCObject*) {
+        benchPending = true;
+        say("run check: runs at the start of your next attempt from the beginning (restart the level)");
+        FLAlertLayer::create("Run check",
+            "Restart the level from the beginning: your longest recorded run is replayed on the hidden player and the "
+            "result shows in the console (F9) and in Stats.",
+            "OK")->show();
+    }
+
     void onStats(CCObject*) {
         FLAlertLayer::create("Practice stats", statsText(), "OK")->show();
     }
@@ -3155,32 +3467,32 @@ class BufferMenu : public geode::Popup {
     }
 
     CCMenuItemSpriteExtra* textButton(char const* text, SEL_MenuHandler handler, float scale = 0.6f) {
-        auto* sprite = ButtonSprite::create(text, "bigFont.fnt", "GJ_button_02.png", 0.8f);
+        auto* sprite = ButtonSprite::create(text, "bigFont.fnt", m_t.button, 0.8f);
         sprite->setScale(scale);
         return CCMenuItemSpriteExtra::create(sprite, this, handler);
     }
 
 protected:
     bool init() {
-        if (!Popup::init(380.f, 388.f, "GJ_square04.png")) {
+        if (!Popup::init(380.f, 412.f, "GJ_square04.png")) {
             return false;
         }
-        m_bgSprite->setColor({ 255, 195, 235 });
+        m_bgSprite->setColor(m_t.bg);
         this->setTitle("Click Before Frames");
         if (m_title) {
-            m_title->setColor(SOFT_PINK);
+            m_title->setColor(m_t.soft);
         }
         addFloaters();
 
         // hearts around the title
         for (float side : { -1.f, 1.f }) {
-            auto* h = heart(0.32f, PINK);
+            auto* h = heart(0.32f, m_t.main);
             h->setRotation(side * 15.f);
             m_mainLayer->addChildAtPosition(h, Anchor::Top, { side * 118.f, -20.f });
             pulse(h, 0.32f);
             auto* sp = CCSprite::create("sparkle.png"_spr);
             sp->setScale(0.25f);
-            sp->setColor(SOFT_PINK);
+            sp->setColor(m_t.soft);
             m_mainLayer->addChildAtPosition(sp, Anchor::Top, { side * 134.f, -10.f });
             sp->runAction(CCRepeatForever::create(CCRotateBy::create(3.f, side * 360.f)));
         }
@@ -3195,7 +3507,7 @@ protected:
         m_mainLayer->addChildAtPosition(icon, Anchor::TopLeft, { 34.f, -30.f });
         icon->runAction(CCRepeatForever::create(CCSequence::create(CCEaseSineInOut::create(CCMoveBy::create(0.8f, { 0.f, 3.f })),
             CCEaseSineInOut::create(CCMoveBy::create(0.8f, { 0.f, -3.f })), nullptr)));
-        auto* iconHeart = heart(0.2f, PINK);
+        auto* iconHeart = heart(0.2f, m_t.main);
         m_mainLayer->addChildAtPosition(iconHeart, Anchor::TopLeft, { 52.f, -16.f });
         pulse(iconHeart, 0.2f);
 
@@ -3236,7 +3548,7 @@ protected:
         // status + shortcuts
         m_status = CCLabelBMFont::create("", "chatFont.fnt");
         m_status->setScale(0.55f);
-        m_status->setColor(LILAC);
+        m_status->setColor(m_t.accent);
         m_mainLayer->addChildAtPosition(m_status, Anchor::Bottom, { 0.f, 56.f });
         m_buttonMenu->addChildAtPosition(textButton("Settings", menu_selector(BufferMenu::onAllSettings), 0.55f), Anchor::Bottom,
             { -132.f, 26.f });
@@ -3245,6 +3557,16 @@ protected:
             { 37.f, 26.f });
         m_buttonMenu->addChildAtPosition(textButton("Forget", menu_selector(BufferMenu::onForget), 0.55f), Anchor::Bottom,
             { 124.f, 26.f });
+
+        // presets + run check
+        char const* presets[] = { "Safe", "Balanced", "Aggressive" };
+        for (int i = 0; i < 3; ++i) {
+            auto* button = textButton(presets[i], menu_selector(BufferMenu::onPreset), 0.5f);
+            button->setTag(i);
+            m_buttonMenu->addChildAtPosition(button, Anchor::Bottom, { -132.f + 82.f * i, 82.f });
+        }
+        m_buttonMenu->addChildAtPosition(textButton("Run check", menu_selector(BufferMenu::onRunCheck), 0.5f), Anchor::Bottom,
+            { 124.f, 82.f });
 
         refresh();
         return true;
@@ -3303,6 +3625,7 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
             stats->setPosition({ win.width - 6.f, win.height - 16.f });
             this->addChild(stats, 100);
         }
+        benchFinish();  // a completed run is the best recording there is
         endAttempt();
     }
 };
@@ -3310,7 +3633,7 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
 class $modify(BufPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
-        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", "GJ_button_02.png", 0.8f);
+        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", BufferMenu::currentTheme().button, 0.8f);
         sprite->setScale(0.6f);
         auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(BufPauseLayer::onBufferMenu));
         auto* menu = CCMenu::create();
@@ -3355,7 +3678,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.74 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.75 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -3401,6 +3724,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.rapid = 0;
         forgetPress();
         memoryDeath();
+        benchFinish();
         refreshHeatmap();
         endAttempt();
         finishDrift(" (died)");
@@ -3421,6 +3745,8 @@ class $modify(BufPlayLayer, PlayLayer) {
             sessionStats = {};
         }
         attemptStats = {};
+        benchNeedStart = true;
+        benchRecording = false;
         loadProfile();
         if (buf.saveDing) {
             FMODAudioEngine::sharedEngine()->preloadEffect("counter003.ogg");  // v2.58: no hitch on the first ding
@@ -3557,6 +3883,8 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void onQuit() {
+        benchFinish();
+        benchRecording = false;
         saveMemory();
         // v2.58: changes made in the settings popup during the level are kept for this level;
         // before, leaving the level silently put the old values back.
@@ -3570,6 +3898,8 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void resetLevel() {
+        benchFinish();
+        benchNeedStart = true;
         endAttempt();
         buf.usedThisAttempt = false;
         resetPending();
@@ -3672,6 +4002,14 @@ class $modify(BufPlayerObject, PlayerObject) {
                 buf.panelDirty = false;
                 refreshPanel();
             }
+            if (benchNeedStart) {
+                benchNeedStart = false;
+                if (benchPending) {
+                    benchPending = false;
+                    benchCheck(layer, this);
+                }
+                benchStart(layer, this);
+            }
             driftStep(this);
             memoryTick();
             if (buf.enabled) {
@@ -3689,6 +4027,7 @@ class $modify(BufPlayerObject, PlayerObject) {
         }
         PlayerObject::update(dt);
         if (isP1) {
+            benchStep(this);
             buf.inRealUpdate = false;
             float dx = getPosition().x - buf.tickStartX;
             if (std::abs(dx) > 0.01f) {
@@ -3830,31 +4169,34 @@ class $modify(BufPlayerObject, PlayerObject) {
 class $modify(BufKeyboard, CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool isKeyDown, bool isKeyRepeat, double timestamp) {
         if (isKeyDown && !isKeyRepeat && GameManager::get()->m_playLayer) {
-            if (key == KEY_F6) {
+            // v2.75: rebindable in the settings
+            int k = static_cast<int>(key);
+            auto is = [&](int i) { return buf.keys[i] != 0 && k == buf.keys[i]; };
+            if (is(0)) {
                 cycleStage();
             }
-            else if (key == KEY_F7) {
+            else if (is(1)) {
                 auto* layer = GameManager::get()->m_playLayer;
                 if (layer && !layer->m_isPaused) {
                     layer->pauseGame(true);
                 }
                 BufferMenu::open();
             }
-            else if (key == KEY_F9) {
+            else if (is(3)) {
                 buf.panelOpen = !buf.panelOpen;
                 refreshPanel();
             }
-            else if (key == KEY_F8) {
+            else if (is(2)) {
                 exportConsole();
             }
-            else if (key == KEY_F11) {
+            else if (is(5)) {
                 memory.clear();
                 pending.active = false;
                 memoryDirty = true;
                 saveMemory();
                 say("memory for this level cleared");
             }
-            else if (key == KEY_F10) {
+            else if (is(4)) {
                 buf.showPath = !buf.showPath;
                 if (buf.pathNode) {
                     buf.pathNode->clear();
@@ -3934,6 +4276,9 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                 // its first tick.
                 // Decided on the first ticks and kept by object, so a spike that follows you
                 // stays ignored even when "predict moving objects" moves it along.
+                if (!buf.simDisabled.empty() && buf.simDisabled.contains(object)) {
+                    continue;
+                }
                 if (buf.haveRealRect && (bit & HAZARD_TYPES)) {
                     if (!buf.harmless.empty() && buf.harmless.contains(object)) {
                         continue;
@@ -4007,6 +4352,9 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                 return;
             }
         }
+        if (!buf.simulating && button == 1) {
+            benchInput(down);  // v2.75: what the game really gets (your clicks and delayed ones)
+        }
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 
@@ -4068,6 +4416,15 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     // prediction run, many times a click), which broke triggers in some levels.
     void toggleGroupTriggered(int group, bool activate, gd::vector<int> const& remapKeys, int triggerID, int controlID) {
         if (buf.simulating) {
+            // v2.75: a toggle orb that switches a group off: the ghost stops colliding with
+            // that group for the rest of this prediction (the real objects aren't touched)
+            if (!activate) {
+                if (auto* objects = this->getGroup(group)) {
+                    for (auto* object : CCArrayExt<GameObject*>(objects)) {
+                        buf.simDisabled.insert(object);
+                    }
+                }
+            }
             return;
         }
         GJBaseGameLayer::toggleGroupTriggered(group, activate, remapKeys, triggerID, controlID);
