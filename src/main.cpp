@@ -1970,14 +1970,14 @@ namespace {
 
     // Find the smallest delay that clearly beats pressing now. 0 = don't buffer.
     int searchDelay(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, bool down, bool anyWave, int horizon, int maxDelay,
-        int releaseAfter, int base, int* landed) {
+        int releaseAfter, int base, int* landed, bool needFull = false) {
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
         auto overBudget = [&] {
             return std::chrono::duration<double, std::milli>(clock::now() - start).count() > buf.budgetMs;
         };
 
-        int target = std::min(horizon, base + st(12));
+        int target = needFull ? horizon : std::min(horizon, base + st(12));
         dbgBestK = 0;
         dbgBestRet = -1;
         int waveBestK = 0;
@@ -2685,9 +2685,14 @@ namespace {
                                  : simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, target, e);
         };
 
+        // v2.69: a cube / ball jump save has to land safely. A save that only lived 12 ticks
+        // longer than pressing now still crashed later in the same jump (Acheron's first jump:
+        // +32t..+40t "saves" that died ~130 ticks later, every time); those clicks now go
+        // through untouched instead of being moved by up to 10 frames for nothing.
+        int needed = groundPress ? horizon : std::min(horizon, base + st(12));
         int learned = memoryDelay(slice);
         if (learned > 0 && learned <= maxDelay && !(anyWave && buf.waveV46)) {
-            int target = std::min(horizon, base + st(12));
+            int target = needed;
             SimEnd e;
             int ret = scoreAt(learned, target, &e);
             if (ret >= target) {
@@ -2710,7 +2715,8 @@ namespace {
                   : ufoPress      ? searchSmallest(horizon, maxDelay, base, &landed, [&](int k, int target, SimEnd* e) {
                         return ufoScore(layer, p1, p2, dual, k, horizon, releaseAfter, target, e);
                     })
-                                  : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed);
+                                  : searchDelay(layer, p1, p2, dual, down, anyWave, horizon, maxDelay, releaseAfter, base, &landed,
+                                        groundPress);
         }
         if (saved <= 0) {
             say("no save: {}{} dies in {}t (max {}t, best +{}t -> {}t of {})", down ? "press" : "release", tickTag, base, maxDelay,
@@ -2728,7 +2734,7 @@ namespace {
         // three; if none does, the original save is kept, so this never makes things worse.
         bool robustNote = false;
         if (buf.robustSaves && !(anyWave && buf.waveV46)) {
-            int target = std::min(horizon, base + st(12));
+            int target = needed;
             // half a tick of x movement: normal speed (0.9) covers 311.58 units a second
             float shift = std::max(0.3f, 0.5f * (311.58f / 240.f) * (std::abs(p1->m_playerSpeed) / 0.9f));
             auto robust = [&](int k) {
@@ -3263,7 +3269,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.68 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.69 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
