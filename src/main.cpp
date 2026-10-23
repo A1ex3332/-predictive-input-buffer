@@ -620,12 +620,6 @@ namespace {
 
     void pressGhost(PlayerObject* ghost, bool down) {
         (ghost == buf.ghost1 ? buf.held1 : buf.held2) = down;
-        // v2.53: a player whose controls the level disabled (Options trigger, e.g. a hidden
-        // Player 2 parked under spikes in dual mode, seen in Relief) ignores clicks, so its
-        // ghost must too; it jumped into those spikes and every press looked like a death.
-        if (ghost->m_controlsDisabled) {
-            return;
-        }
         if (down) {
             ghost->pushButton(PlayerButton::Jump);
         }
@@ -648,7 +642,6 @@ namespace {
         ghost->m_vehicleSize = real->m_vehicleSize;
         ghost->m_playerSpeed = real->m_playerSpeed;
         ghost->m_isDashing = real->m_isDashing;
-        ghost->m_controlsDisabled = real->m_controlsDisabled;
         ghost->m_lastActivatedPortal = real->m_lastActivatedPortal;
         if (buf.ghostShiftX != 0.f) {
             // v2.28 robustness check: start the ghost a little ahead of / behind you, the way a
@@ -1305,14 +1298,14 @@ namespace {
             // v2.26: orb auto-clicks that wait a few ticks into the orb fire here, if the
             // ghost is still inside an orb by then.
             if (buf.autoAt1 >= 0 && tick >= buf.autoAt1) {
-                if (!buf.held1 && !buf.ghost1->m_controlsDisabled && buf.ghost1->m_touchingRings->count() > 0) {
+                if (!buf.held1 && buf.ghost1->m_touchingRings->count() > 0) {
                     buf.ghost1->pushButton(PlayerButton::Jump);
                     buf.auto1 = true;
                 }
                 buf.autoAt1 = -2;
             }
             if (second && buf.autoAt2 >= 0 && tick >= buf.autoAt2) {
-                if (!buf.held2 && !buf.ghost2->m_controlsDisabled && buf.ghost2->m_touchingRings->count() > 0) {
+                if (!buf.held2 && buf.ghost2->m_touchingRings->count() > 0) {
                     buf.ghost2->pushButton(PlayerButton::Jump);
                     buf.auto2 = true;
                 }
@@ -2227,14 +2220,6 @@ namespace {
 
         auto* p1 = self->m_player1;
         auto* p2 = dual ? layer->m_player2 : nullptr;
-        // v2.54: some levels (Relief) park a hidden Player 1 with its controls disabled and let
-        // you play Player 2 (a wave). Predicting P1 there tested a cube that never jumps, so
-        // every click "died" at t0. The player your clicks actually move is predicted instead.
-        if (p1->m_controlsDisabled && layer->m_player2 && !layer->m_player2->m_controlsDisabled && !twoPlayer) {
-            p1 = layer->m_player2;
-            p2 = nullptr;
-            dual = false;
-        }
 
         // v2.18 Click Between Frames: a click that arrives in the middle of P1's physics step
         // landed `midTick` of the way through the tick (measured from how far P1 has moved
@@ -3797,7 +3782,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         // v2.2 calculation mode: assume you click every orb you touch, on time. Without
         // this the ghost (which only has the one click being tested) misses the next orb in a
         // chain, falls, and the mod thinks a perfectly good click is a death.
-        if (buf.simulating && buf.orbClick && !player->m_controlsDisabled) {
+        if (buf.simulating && buf.orbClick) {
             bool first = player == buf.ghost1;
             bool& held = first ? buf.held1 : buf.held2;
             bool& autoClick = first ? buf.auto1 : buf.auto2;
