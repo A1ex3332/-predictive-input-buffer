@@ -1618,8 +1618,21 @@ namespace {
     }
 
     // After every buffer decision: drift check + path view for the input the game gets.
+    // v2.70: when the current click started being processed; the extras after the search
+    // (robust check, drift check, path view) are skipped once the click has used up its
+    // time, so one click can't stall a frame for long. The search itself keeps its budget.
+    std::chrono::steady_clock::time_point clickStart;
+
+    double clickMs() {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - clickStart).count();
+    }
+
     void decided(PlayLayer* layer, PlayerObject* p1, PlayerObject* p2, bool dual, int delay, bool down, int horizon, int releaseAfter) {
         memoryNote(p1, delay);
+        if (clickMs() > buf.budgetMs * 1.5) {
+            finishDrift("");  // no time left for the debug runs this click
+            return;
+        }
         startDrift(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
         showPaths(layer, p1, p2, dual, delay, down, horizon, releaseAfter);
     }
@@ -2045,14 +2058,14 @@ namespace {
         return 0;
     }
 
-    // v2.65 live path (F10): between clicks the path keeps updating, a few times a frame:
+    // v2.65 live path (F10): between clicks the path keeps updating (v2.70: 20 times a second):
     // blue = where you go if you do nothing, yellow = where a click right now takes you.
     // After a click, that click's path (red / green) stays up briefly first.
     void livePath(PlayLayer* layer, PlayerObject* p1) {
         if (!buf.showPath || !buf.pathNode || !buf.ghost1 || buf.simulating || p1->m_isDead || layer->m_isPlatformer) {
             return;
         }
-        if (tickCount < buf.pathHoldUntil || !buf.queue.empty() || tickCount % st(6) != 0) {
+        if (tickCount < buf.pathHoldUntil || !buf.queue.empty() || tickCount % st(12) != 0) {
             return;
         }
         bool twoPlayer = layer->m_level && layer->m_level->m_twoPlayerMode;
@@ -2303,6 +2316,7 @@ namespace {
     }
 
     bool intercept(GJBaseGameLayer* self, bool down, bool isPlayer1) {
+        clickStart = std::chrono::steady_clock::now();
         auto* layer = GameManager::get()->m_playLayer;
         if (!layer) {
             return false;
@@ -2749,7 +2763,7 @@ namespace {
                 }
                 return true;
             };
-            if (!robust(saved)) {
+            if (clickMs() < buf.budgetMs && !robust(saved)) {
                 for (int k = saved + 1; k <= std::min(maxDelay, saved + st(3)); ++k) {
                     SimEnd e;
                     int ret = scoreAt(k, target, &e);
@@ -3269,7 +3283,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.69 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.70 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
