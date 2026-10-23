@@ -2359,9 +2359,19 @@ namespace {
                 buf.pathNode->clear();
                 buf.pathNode->drawDot(p1->getPosition(), 4.f, { 0.6f, 0.6f, 0.65f, 0.9f });
             }
-            // v2.61: waiting inputs are dropped again, like v2.48 (v2.49 sent them all at once,
-            // which turned a waiting press + this release into a zero-length tap)
-            resetPending();
+            // v2.66: inputs still waiting aren't dropped any more (a dropped press was a turn
+            // that never happened) and aren't all sent at once (v2.49, a zero-length tap):
+            // they fire one per tick, in order, starting next tick, and this input right after.
+            if (!buf.queue.empty()) {
+                for (size_t i = 0; i < buf.queue.size(); ++i) {
+                    buf.queue[i].ticksLeft = static_cast<int>(i);
+                }
+                if (buf.queue.back().down != down) {
+                    queueInput(static_cast<int>(buf.queue.size()), down);
+                }
+                buf.shift = 0;
+                return true;
+            }
             buf.appliedInput = down;
             return false;
         }
@@ -3202,7 +3212,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.65 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.66 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
