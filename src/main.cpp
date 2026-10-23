@@ -3355,7 +3355,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.73 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.74 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -4060,6 +4060,59 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             return;
         }
         GJBaseGameLayer::gameEventTriggered(event, material, playerID);
+    }
+
+    // v2.74: nothing the hidden ghost touches during a prediction may change the real level.
+    // Toggle orbs, orbs / pads / collectibles with groups, item and counter triggers could
+    // otherwise toggle or spawn groups and change item counters for real (once per
+    // prediction run, many times a click), which broke triggers in some levels.
+    void toggleGroupTriggered(int group, bool activate, gd::vector<int> const& remapKeys, int triggerID, int controlID) {
+        if (buf.simulating) {
+            return;
+        }
+        GJBaseGameLayer::toggleGroupTriggered(group, activate, remapKeys, triggerID, controlID);
+    }
+
+    void spawnGroup(int group, bool ordered, double delay, gd::vector<int> const& remapKeys, int triggerID, int controlID) {
+        if (buf.simulating) {
+            return;
+        }
+        GJBaseGameLayer::spawnGroup(group, ordered, delay, remapKeys, triggerID, controlID);
+    }
+
+    void toggleGroup(int id, bool activate) {
+        if (buf.simulating) {
+            return;
+        }
+        GJBaseGameLayer::toggleGroup(id, activate);
+    }
+
+    void pickupItem(EffectGameObject* object) {
+        if (buf.simulating) {
+            return;
+        }
+        GJBaseGameLayer::pickupItem(object);
+    }
+
+    void updateCounters(int itemId, int value) {
+        if (buf.simulating) {
+            return;
+        }
+        GJBaseGameLayer::updateCounters(itemId, value);
+    }
+
+    void activateItemEditTrigger(ItemTriggerGameObject* object) {
+        if (buf.simulating) {
+            return;
+        }
+        GJBaseGameLayer::activateItemEditTrigger(object);
+    }
+
+    void activateItemCompareTrigger(ItemTriggerGameObject* object, gd::vector<int> const& remapKeys) {
+        if (buf.simulating) {
+            return;
+        }
+        GJBaseGameLayer::activateItemCompareTrigger(object, remapKeys);
     }
 
     // Safety net in case a mode portal slips through: end prediction, change nothing.
