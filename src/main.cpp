@@ -2552,7 +2552,11 @@ namespace {
                 int bestK = 0;
                 int bestCrash = crash0;
                 int hold = (cubeStyleWave || shipInput) ? -1 : releaseAfter;
-                for (int k = 1; k <= maxDelay; ++k) {
+                // v2.67: wave / ship input that's already safe (if you keep reacting) is held back
+                // at most 1 frame here. Up to 4f (16t) made fast zigzags at death spots feel late:
+                // every later click in the rhythm gets shifted by the same amount.
+                int moreMax = (cubeStyleWave || shipInput) ? std::min(maxDelay, st(4)) : maxDelay;
+                for (int k = 1; k <= moreMax; ++k) {
                     SimEnd e;
                     int ret = simulateOrbs(layer, p1, p2, dual, k, down, horizon, hold, horizon, &e);
                     if (e == SimEnd::StopSearch) {
@@ -3212,7 +3216,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.66 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.67 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
