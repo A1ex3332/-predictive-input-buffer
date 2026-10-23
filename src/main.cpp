@@ -207,6 +207,7 @@ namespace {
         bool explain = false;        // v2.33: log why an input was passed through untouched
         bool deathLog = false;       // v2.32: log what kills the press-now ghost on every no-save
         bool captureKiller = false;  // v2.30: record what kills the ghost in the press-now run
+        bool baseTouchedDown = false;  // v2.63: the press-now ghost was back on the ground at some point
         bool killerSeen = false;
         int killerTick = -1;
         int killerId = 0, killerType = -1;
@@ -1383,6 +1384,9 @@ namespace {
             }
 
             bool grounded = buf.ghost1->m_isOnGround && (!second || buf.ghost2->m_isOnGround);
+            if (grounded && airTicks > 0 && buf.captureKiller) {
+                buf.baseTouchedDown = true;
+            }
             if (!grounded) {
                 ++airTicks;
                 groundTicks = 0;
@@ -1938,6 +1942,23 @@ namespace {
                 }
             }
             else if (ret >= target) {
+                // v2.63: a delay that only lives 12 ticks longer can still crash later in the same
+                // jump (Acheron's first jump: saved, then died on landing). Prefer the smallest
+                // delay whose jump lands safely; if none does, keep this one.
+                SimEnd full;
+                if (ret < horizon && simulateOrbs(layer, p1, p2, dual, k, down, horizon, releaseAfter, horizon, &full) < horizon) {
+                    for (int j = k + 1; j <= maxDelay && !overBudget(); ++j) {
+                        SimEnd e;
+                        int r = simulateOrbs(layer, p1, p2, dual, j, down, horizon, releaseAfter, horizon, &e);
+                        if (e == SimEnd::StopSearch) {
+                            break;
+                        }
+                        if (r >= horizon) {
+                            *landed = r;
+                            return j;
+                        }
+                    }
+                }
                 *landed = ret;
                 return k;
             }
@@ -2410,6 +2431,7 @@ namespace {
         ufoPress = ufoPress || swingPress;
         bool shipInput = anyShip && !anyWave;  // v2.25: press or release, both steer the ship
         buf.captureKiller = true;
+        buf.baseTouchedDown = false;
         buf.killerSeen = false;
         buf.baseEscape = -1;
         int base = cubeStyleWave ? waveScore(layer, p1, p2, dual, 0, down, horizon, horizon, &end)
@@ -2509,7 +2531,9 @@ namespace {
         // (~90 ticks) dies to the next obstacle, not this click: no delay helps, so don't
         // spend the whole time budget searching (it was most of the per-click lag).
         bool groundPress = down && !anyFlyer && !anyRobot && !anySpider && !anyWave;
-        if (groundPress && buf.lateCrash > 0 && base >= st(buf.lateCrash)) {
+        // v2.63: only once the jump came back down. A long jump (Acheron's first: ~94 ticks in
+        // the air, then onto a spike) crashes late too, and that crash *is* this click's.
+        if (groundPress && buf.lateCrash > 0 && base >= st(buf.lateCrash) && buf.baseTouchedDown) {
             if (buf.explain) {
                 say("pass press: crash only at {}t, after the jump would land (late crash rule)", base);
             }
@@ -3121,7 +3145,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.62 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.63 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
