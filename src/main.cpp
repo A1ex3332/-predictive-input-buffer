@@ -3096,6 +3096,11 @@ $on_mod(Loaded) {
     buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
     recoverGlobals();
     buf.stage = std::clamp(static_cast<int>(Mod::get()->getSavedValue<int64_t>("stage", 0)), 0, STAGE_COUNT - 1);
+    // v2.62: per-level settings off (switched off once): every level uses the same switches, like v2.43.1
+    if (!Mod::get()->getSavedValue<bool>("per-level-v262", false)) {
+        Mod::get()->setSettingValue<bool>("per-level-settings", false);
+        Mod::get()->setSavedValue("per-level-v262", true);
+    }
     // v2.60: low latency is off for every level (switched off once for existing installs too;
     // it's one setting for all levels, not saved per level)
     if (!Mod::get()->getSavedValue<bool>("low-latency-v260", false)) {
@@ -3116,7 +3121,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.61 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.62 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {

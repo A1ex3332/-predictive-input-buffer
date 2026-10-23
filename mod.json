@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.61.0",
+	"version": "v2.62.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -311,7 +311,7 @@
 			"type": "bool",
 			"name": "Per-level settings",
 			"description": "The menu switches are remembered for each level and come back when you open it again. The stage (F6) and low latency are the same for every level.",
-			"default": true
+			"default": false
 		},
 		"death-heatmap": {
 			"type": "bool",
