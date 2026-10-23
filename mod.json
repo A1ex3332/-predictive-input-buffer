@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.67.0",
+	"version": "v2.68.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -230,7 +230,7 @@
 		"predict-moving-objects": {
 			"type": "bool",
 			"name": "Predict moving objects (experimental)",
-			"description": "Spikes and blocks near your path that are moving right now (move triggers) are moved along their current motion during predictions, so saves account for where they will be. Straight-line movement only. Turn 'Don't buffer near moving objects' off when using this.",
+			"description": "Spikes, saws and blocks near your path that are moving right now (move / rotate triggers) are moved along their current motion during predictions: straight lines, curved / circular paths and spinning, so saves account for where they will be. Easing (speeding up / slowing down) isn't predicted. Turn 'Don't buffer near moving objects' off when using this.",
 			"default": false
 		},
 		"robust-saves": {

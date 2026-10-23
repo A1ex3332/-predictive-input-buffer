@@ -37,6 +37,7 @@
 #include <cctype>
 #include <climits>
 #include <cmath>
+#include <complex>
 #include <deque>
 #include <filesystem>
 #include <functional>
@@ -295,6 +296,10 @@ namespace {
         int movedTick;
         double vx = 0.0;  // v2.27: movement per physics step while it's moving
         double vy = 0.0;
+        double pvx = 0.0;  // v2.68: the step before (curved paths: how the direction turns)
+        double pvy = 0.0;
+        double rot = 0.0;  // v2.68: rotation, and how much it turns per step
+        double vrot = 0.0;
     };
     constexpr int MOVER_TICKS = 120;
     constexpr size_t WATCH_LIMIT = 4096;
@@ -866,6 +871,9 @@ namespace {
     // level frozen at the click, so it tests them in the wrong place).
     void watchObject(GameObject* object) {
         auto [it, added] = watched.try_emplace(object, Watched { object->m_positionX, object->m_positionY, -MOVER_TICKS });
+        if (added) {
+            it->second.rot = object->getRotation();
+        }
         if (!added && tickCount - it->second.movedTick < st(MOVER_TICKS)) {
             buf.sawMover = true;
         }
@@ -895,17 +903,24 @@ namespace {
                 it = watched.erase(it);
                 continue;
             }
-            if (object->m_positionX != w.x || object->m_positionY != w.y) {
+            double rot = object->getRotation();
+            if (object->m_positionX != w.x || object->m_positionY != w.y || rot != w.rot) {
                 // called every step, so the change is the movement per step
+                bool consecutive = tickCount - w.movedTick == 1;
+                w.pvx = consecutive ? w.vx : 0.0;
+                w.pvy = consecutive ? w.vy : 0.0;
                 w.vx = object->m_positionX - w.x;
                 w.vy = object->m_positionY - w.y;
+                double dr = rot - w.rot;
+                w.vrot = std::remainder(dr, 360.0);
                 w.x = object->m_positionX;
                 w.y = object->m_positionY;
+                w.rot = rot;
                 w.movedTick = tickCount;
                 movingNow.push_back(object);
             }
             else if (tickCount - w.movedTick > 1) {
-                w.vx = w.vy = 0.0;  // stopped
+                w.vx = w.vy = w.pvx = w.pvy = w.vrot = 0.0;  // stopped
             }
             ++it;
         }
@@ -915,9 +930,14 @@ namespace {
     // moved along their current motion during a prediction (where they'll be k steps
     // later), and put back exactly afterwards. Straight-line movement only: easing,
     // rotation and toggles still aren't predicted.
+    // v2.68: also curved paths (rotate triggers move objects around a center, Orbit's saws):
+    // when the direction of motion turned between the last two steps, it keeps turning by the
+    // same angle each step, and objects that spin keep spinning. Still put back exactly after.
     struct Mover {
         GameObject* object;
         double x, y, vx, vy;
+        double turn = 0.0;  // radians the motion direction turns per step (0 = straight)
+        double rotX = 0.0, rotY = 0.0, vrot = 0.0;  // both axes kept as they were (skewed objects)
     };
     std::vector<Mover> movers;
 
@@ -932,8 +952,22 @@ namespace {
                 continue;
             }
             auto const& w = it->second;
-            if ((w.vx != 0.0 || w.vy != 0.0) && tickCount - w.movedTick <= 1) {
-                movers.push_back({ object, object->m_positionX, object->m_positionY, w.vx, w.vy });
+            if ((w.vx != 0.0 || w.vy != 0.0 || w.vrot != 0.0) && tickCount - w.movedTick <= 1) {
+                Mover m { object, object->m_positionX, object->m_positionY, w.vx, w.vy };
+                double speed = std::hypot(w.vx, w.vy);
+                double prev = std::hypot(w.pvx, w.pvy);
+                if (speed > 1e-6 && prev > 1e-6) {
+                    double turn = std::remainder(std::atan2(w.vy, w.vx) - std::atan2(w.pvy, w.pvx), 6.283185307179586);
+                    double ratio = speed / prev;
+                    // a steady turn at a steady speed; anything wilder stays a straight line
+                    if (std::abs(turn) > 1e-4 && std::abs(turn) < 0.5 && ratio > 0.8 && ratio < 1.25) {
+                        m.turn = turn;
+                    }
+                }
+                m.rotX = object->getRotationX();
+                m.rotY = object->getRotationY();
+                m.vrot = w.vrot;
+                movers.push_back(m);
             }
         }
     }
@@ -942,6 +976,19 @@ namespace {
         for (auto const& m : movers) {
             double x = m.x + m.vx * steps;
             double y = m.y + m.vy * steps;
+            if (m.turn != 0.0 && steps > 0) {
+                // sum of the step vector turned by `turn` once more every step
+                std::complex<double> v { m.vx, m.vy };
+                auto rho = std::polar(1.0, m.turn);
+                auto moved = v * rho * (1.0 - std::pow(rho, steps)) / (1.0 - rho);
+                x = m.x + moved.real();
+                y = m.y + moved.imag();
+            }
+            if (m.vrot != 0.0) {
+                double spun = steps == 0 ? 0.0 : m.vrot * steps;
+                m.object->setRotationX(static_cast<float>(m.rotX + spun));
+                m.object->setRotationY(static_cast<float>(m.rotY + spun));
+            }
             m.object->setPosition({ static_cast<float>(x), static_cast<float>(y) });
             m.object->m_positionX = x;
             m.object->m_positionY = y;
@@ -3216,7 +3263,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.67 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.68 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
