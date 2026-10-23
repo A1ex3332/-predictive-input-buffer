@@ -146,6 +146,8 @@ namespace {
         CCLabelBMFont* panelTitle = nullptr;               // current stage
         std::vector<CCLabelBMFont*> panelLines;            // one label per log line (colored)
         bool panelOpen = false;  // closed by default, remembered for the session
+        bool panelDirty = false; // v2.71: new log lines, the panel is redrawn once on the next step
+        bool perfMode = false;   // v2.71: performance mode
         std::deque<std::string> logLines;
 
         bool simulating = false;
@@ -388,9 +390,9 @@ namespace {
         if (buf.console) {
             std::printf("[InputBuffer] %s\n", msg.c_str());
         }
-        if (buf.panelOpen) {
-            refreshPanel();
-        }
+        // v2.71: redrawn once per physics step instead of on every line (a click that logs
+        // 4 lines rebuilt all 8 labels 4 times)
+        buf.panelDirty = buf.panelOpen;
     }
 
     bool isGhost(PlayerObject* p) {
@@ -459,6 +461,16 @@ namespace {
         buf.waveV46 = mod->getSettingValue<bool>("wave-v46");
         buf.waveMargin = mod->getSettingValue<bool>("wave-safety-margin");
         buf.orbWindow = static_cast<int>(mod->getSettingValue<int64_t>("orb-align-ticks"));
+        // v2.71 performance mode: for PCs that drop frames on clicks. Shorter searches, no
+        // extra robustness runs, orbs clicked only the normal way (no late-click retries), and
+        // the debug runs (drift check, live path view) off.
+        buf.perfMode = mod->getSettingValue<bool>("performance-mode");
+        if (buf.perfMode) {
+            buf.budgetMs = std::min(buf.budgetMs, 4.0);
+            buf.robustSaves = false;
+            buf.orbTiming = false;
+            buf.driftCheck = false;
+        }
     }
 
     void applyStage() {
@@ -2062,7 +2074,7 @@ namespace {
     // blue = where you go if you do nothing, yellow = where a click right now takes you.
     // After a click, that click's path (red / green) stays up briefly first.
     void livePath(PlayLayer* layer, PlayerObject* p1) {
-        if (!buf.showPath || !buf.pathNode || !buf.ghost1 || buf.simulating || p1->m_isDead || layer->m_isPlatformer) {
+        if (!buf.showPath || buf.perfMode || !buf.pathNode || !buf.ghost1 || buf.simulating || p1->m_isDead || layer->m_isPlatformer) {
             return;
         }
         if (tickCount < buf.pathHoldUntil || !buf.queue.empty() || tickCount % st(12) != 0) {
@@ -2965,6 +2977,7 @@ class BufferMenu : public geode::Popup {
         { "training-mode", "Training (hints only)" },
         { "death-heatmap", "Death heatmap" },
         { "save-ding", "Ding on save" },
+        { "performance-mode", "Performance mode" },
         { "explain-inputs", "Explain inputs (debug)" },
     };
 
@@ -3090,7 +3103,7 @@ class BufferMenu : public geode::Popup {
 
 protected:
     bool init() {
-        if (!Popup::init(380.f, 364.f, "GJ_square04.png")) {
+        if (!Popup::init(380.f, 388.f, "GJ_square04.png")) {
             return false;
         }
         m_bgSprite->setColor({ 255, 195, 235 });
@@ -3145,7 +3158,7 @@ protected:
         m_mainLayer->addChildAtPosition(m_stage, Anchor::Top, { 0.f, -52.f });
 
         // switches, two columns
-        constexpr int ROWS = 9;
+        constexpr int ROWS = 10;
         for (int i = 0; i < static_cast<int>(std::size(OPTIONS)); ++i) {
             int col = i / ROWS;
             int row = i % ROWS;
@@ -3283,7 +3296,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.70 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.71 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -3595,6 +3608,10 @@ class $modify(BufPlayerObject, PlayerObject) {
             ++logClock;
             if (buf.enabled) {
                 buf.usedThisAttempt = true;
+            }
+            if (buf.panelDirty) {
+                buf.panelDirty = false;
+                refreshPanel();
             }
             driftStep(this);
             memoryTick();

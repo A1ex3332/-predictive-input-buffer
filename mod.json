@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.70.0",
+	"version": "v2.71.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -324,6 +324,12 @@
 			"name": "Ding on save",
 			"description": "Plays a short ding every time the buffer saves one of your clicks.",
 			"default": true
+		},
+		"performance-mode": {
+			"type": "bool",
+			"name": "Performance mode",
+			"description": "For PCs that drop frames when you click: predictions get at most 4 ms per click, no extra robustness checks, orbs are only tried with a normal click (no late-click retries), and the drift check and live path view are off. Saves can be a little less precise.",
+			"default": false
 		}
 	},
 	"resources": {
