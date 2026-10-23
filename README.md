@@ -52,3 +52,4 @@ Practice use only; do not use for verified or leaderboard runs.
 - v2.62: per-level settings off by default (switched off once): every level uses the same switches, like v2.43.1.
 - v2.63: late-crash rule only skips clicks whose jump already landed (long jumps like Acheron's first were never saved); cube saves prefer the smallest delay whose jump lands safely.
 - v2.64: a spot memory marked as 'saves failed here' gets saves again after you die there with the input left alone (it no longer blocks a jump forever).
+- v2.65: live path view (F10): between clicks the path keeps updating (blue = do nothing, yellow = click now); a click's own path stays up briefly.
