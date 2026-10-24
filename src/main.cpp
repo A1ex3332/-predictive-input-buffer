@@ -247,6 +247,7 @@ namespace {
         bool saveDing = true;        // v2.56: ding when a click is saved
         CCLabelBMFont* hintLabel = nullptr;  // v2.51: training hint ("2t early")
         bool trainHint = true;       // v2.77: show the training hint on screen
+        bool showWatermark = true;   // v2.78: the "Click Before Frames" label in the corner
         CCDrawNode* heatNode = nullptr;      // v2.51: death marks on the progress bar
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
@@ -463,6 +464,7 @@ namespace {
         buf.swingSmart = mod->getSettingValue<bool>("swing-smart");
         buf.train = mod->getSettingValue<bool>("training-mode");
         buf.trainHint = mod->getSettingValue<bool>("training-hint");
+        buf.showWatermark = mod->getSettingValue<bool>("show-watermark");
         buf.perLevel = mod->getSettingValue<bool>("per-level-settings");
         buf.heatmap = mod->getSettingValue<bool>("death-heatmap");
         buf.saveDing = mod->getSettingValue<bool>("save-ding");
@@ -546,7 +548,7 @@ namespace {
         // v2.57: hidden in practice mode (practice runs can't be submitted, and it crowded the
         // checkpoint buttons); always shown in normal mode while the buffer is on.
         auto* layer = GameManager::get()->m_playLayer;
-        buf.watermark->setVisible(buf.enabled && !(layer && layer->m_isPracticeMode));
+        buf.watermark->setVisible(buf.enabled && buf.showWatermark && !(layer && layer->m_isPracticeMode));
         buf.watermark->setString(fmt::format("Click Before Frames  |  {}", stageText()).c_str());
     }
 
@@ -3301,6 +3303,7 @@ class BufferMenu : public geode::Popup {
         { nullptr, "Path view (F10)" },
         { "training-mode", "Training (hints only)" },
         { "training-hint", "Training hint popup" },
+        { "show-watermark", "Watermark label" },
         { "death-heatmap", "Death heatmap" },
         { "save-ding", "Ding on save" },
         { "performance-mode", "Performance mode" },
@@ -3532,11 +3535,11 @@ protected:
         m_mainLayer->addChildAtPosition(m_stage, Anchor::Top, { 0.f, -52.f });
 
         // switches, two columns
-        constexpr int ROWS = 10;
+        constexpr int ROWS = 11;  // v2.78: 21 switches
         for (int i = 0; i < static_cast<int>(std::size(OPTIONS)); ++i) {
             int col = i / ROWS;
             int row = i % ROWS;
-            CCPoint at { col == 0 ? -165.f : 15.f, -86.f - row * 24.f };
+            CCPoint at { col == 0 ? -165.f : 15.f, -86.f - row * 22.f };
             auto* toggler = CCMenuItemToggler::createWithStandardSprites(this, menu_selector(BufferMenu::onToggle), 0.55f);
             toggler->setTag(i);
             toggler->toggle(optionValue(OPTIONS[i]));
@@ -3692,7 +3695,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.77 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.78 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
