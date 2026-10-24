@@ -246,6 +246,7 @@ namespace {
         bool heatmap = true;         // v2.51: death marks on the progress bar
         bool saveDing = true;        // v2.56: ding when a click is saved
         CCLabelBMFont* hintLabel = nullptr;  // v2.51: training hint ("2t early")
+        bool trainHint = true;       // v2.77: show the training hint on screen
         CCDrawNode* heatNode = nullptr;      // v2.51: death marks on the progress bar
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
         bool spiderSmart = true;     // v2.15: spider-aware landing + "could you have flipped back" scoring
@@ -461,6 +462,7 @@ namespace {
         buf.ballSmart = mod->getSettingValue<bool>("ball-smart");
         buf.swingSmart = mod->getSettingValue<bool>("swing-smart");
         buf.train = mod->getSettingValue<bool>("training-mode");
+        buf.trainHint = mod->getSettingValue<bool>("training-hint");
         buf.perLevel = mod->getSettingValue<bool>("per-level-settings");
         buf.heatmap = mod->getSettingValue<bool>("death-heatmap");
         buf.saveDing = mod->getSettingValue<bool>("save-ding");
@@ -2472,7 +2474,7 @@ namespace {
         }
         noteSave(layer, ticks);
         say("TRAIN {} {}: {}t ({:g}f) early", what, down ? "press" : "release", ticks, ticks * TICK);
-        if (buf.hintLabel) {
+        if (buf.hintLabel && buf.trainHint) {
             buf.hintLabel->setString(fmt::format("{} {:g}f early", down ? "click" : "release", ticks * TICK).c_str());
             buf.hintLabel->stopAllActions();
             buf.hintLabel->setOpacity(230);
@@ -3298,6 +3300,7 @@ class BufferMenu : public geode::Popup {
         { "predict-moving-objects", "Predict moving objects" },
         { nullptr, "Path view (F10)" },
         { "training-mode", "Training (hints only)" },
+        { "training-hint", "Training hint popup" },
         { "death-heatmap", "Death heatmap" },
         { "save-ding", "Ding on save" },
         { "performance-mode", "Performance mode" },
@@ -3599,6 +3602,17 @@ public:
             menu->show();
         }
     }
+
+    // v2.77: closes the menu if it's open; false if there was none
+    static bool closeOpen() {
+        auto* scene = CCScene::get();
+        auto* menu = scene ? scene->getChildByType<BufferMenu>(0) : nullptr;
+        if (!menu) {
+            return false;
+        }
+        menu->onClose(nullptr);
+        return true;
+    }
 };
 
 // v2.46: the level complete screen says so if the buffer was on during the attempt.
@@ -3678,7 +3692,7 @@ $on_mod(Loaded) {
     if (Loader::get()->isModLoaded("square3ang.cbfextrapolate")) {
         say("CBF Extrapolate detected: visual only, predictions unaffected");
     }
-    say("v2.76 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
+    say("v2.77 loaded. F6 cycles: 0.5f -> 1f -> 2f -> 4f -> 6f -> 8f -> custom -> off");
 }
 
 class $modify(BufPlayLayer, PlayLayer) {
@@ -3728,6 +3742,11 @@ class $modify(BufPlayLayer, PlayLayer) {
         refreshHeatmap();
         endAttempt();
         finishDrift(" (died)");
+    }
+
+    void onClosePanel(CCObject*) {
+        buf.panelOpen = false;
+        refreshPanel();
     }
 
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
@@ -3803,8 +3822,18 @@ class $modify(BufPlayLayer, PlayLayer) {
         version->setScale(0.45f);
         version->setOpacity(150);
         version->setAnchorPoint({ 1.f, 0.5f });
-        version->setPosition({ W - 10.f, H - 14.f });
+        version->setPosition({ W - 28.f, H - 14.f });
         buf.panel->addChild(version);
+
+        // v2.77: close button (same as pressing the console key again)
+        auto* closeSprite = CCSprite::createWithSpriteFrameName("GJ_closeBtn_001.png");
+        closeSprite->setScale(0.4f);
+        auto* closeButton = CCMenuItemSpriteExtra::create(closeSprite, this, menu_selector(BufPlayLayer::onClosePanel));
+        closeButton->setPosition({ W - 12.f, H - 14.f });
+        auto* closeMenu = CCMenu::create();
+        closeMenu->setPosition({ 0.f, 0.f });
+        closeMenu->addChild(closeButton);
+        buf.panel->addChild(closeMenu);
 
         buf.panelTitle = CCLabelBMFont::create("", "bigFont.fnt");
         buf.panelTitle->setScale(0.4f);
@@ -4176,6 +4205,10 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
                 cycleStage();
             }
             else if (is(1)) {
+                // v2.77: the menu key closes the menu if it's already open
+                if (BufferMenu::closeOpen()) {
+                    return true;
+                }
                 auto* layer = GameManager::get()->m_playLayer;
                 if (layer && !layer->m_isPaused) {
                     layer->pauseGame(true);
