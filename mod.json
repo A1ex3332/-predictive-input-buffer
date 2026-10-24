@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.76.0",
+	"version": "v2.77.0",
 	"id": "basu.input-buffer",
 	"name": "Click Before Frames",
 	"developer": "BASU",
@@ -306,6 +306,12 @@
 			"name": "Training mode (hints only)",
 			"description": "The buffer still predicts every input but never delays it. When an input would have been saved, a hint shows how early you were (e.g. 'click 0.5f early'), so you learn the timing yourself.",
 			"default": false
+		},
+		"training-hint": {
+			"type": "bool",
+			"name": "Training hint popup",
+			"description": "Show the 'click 0.5f early' popup in training mode. Turn off to keep training mode without the on-screen popup (hints still go to the console, F9).",
+			"default": true
 		},
 		"per-level-settings": {
 			"type": "bool",
